@@ -1,7 +1,6 @@
 """
 PySpark Data Initialization Utility
-Generates sample records with categories, configuration key-value pairs, 
-and ETL schedule definitions using PySpark DataFrames.
+Generates sample records with categories, configuration key-value pairs, and ETL schedule definitions.
 """
 
 from pyspark.sql import SparkSession
@@ -18,69 +17,34 @@ from pathlib import Path
 
 
 class DataInitializer:
-    """Initialize sample data for ETL testing."""
+    """Initializes sample data for ETL testing"""
     
     def __init__(self, spark: SparkSession, config_path: str = "config.yaml"):
-        """
-        Initialize the data generator.
-        
-        Args:
-            spark: Active SparkSession
-            config_path: Path to configuration file
-        """
         self.spark = spark
         self.config = self._load_config(config_path)
         self.logger = self._setup_logger()
         
     def _load_config(self, config_path: str) -> dict:
-        """Load configuration from YAML file."""
-        try:
-            with open(config_path, 'r') as f:
-                return yaml.safe_load(f)
-        except FileNotFoundError:
-            self.logger.warning(f"Config file not found: {config_path}. Using defaults.")
-            return self._get_default_config()
-    
-    def _get_default_config(self) -> dict:
-        """Return default configuration."""
-        return {
-            'data_init': {
-                'num_source_records': 100,
-                'categories': ['PREMIUM', 'STANDARD', 'BASIC', 'VIP', 'TRIAL'],
-                'value_range': {'min': 50, 'max': 1000},
-                'output_format': 'parquet',
-                'output_paths': {
-                    'source_data': 'data/source',
-                    'config_data': 'data/config',
-                    'schedule_data': 'data/schedule'
-                }
-            },
-            'logging': {
-                'level': 'INFO',
-                'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            }
-        }
+        """Load configuration from YAML file"""
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
     
     def _setup_logger(self) -> logging.Logger:
-        """Configure logging."""
-        log_config = self.config.get('logging', {})
+        """Setup logging configuration"""
         logging.basicConfig(
-            level=getattr(logging, log_config.get('level', 'INFO')),
-            format=log_config.get('format', '%(asctime)s - %(levelname)s - %(message)s')
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         return logging.getLogger(__name__)
     
-    def create_sample_source_data(self, num_records: int = None) -> None:
+    def create_sample_source_data(self, num_rows: int = 100):
         """
-        Generate sample source data records.
+        Create sample source data with various categories
         
         Args:
-            num_records: Number of records to generate (overrides config)
+            num_rows: Number of sample records to generate
         """
-        config = self.config['data_init']
-        num_records = num_records or config['num_source_records']
-        
-        self.logger.info(f"Creating {num_records} sample source records...")
+        self.logger.info(f"Creating {num_rows} sample source records...")
         
         # Define schema
         schema = StructType([
@@ -96,44 +60,44 @@ class DataInitializer:
             StructField("changed_by", StringType(), False)
         ])
         
-        # Generate data
+        # Generate sample data
+        categories = self.config['data_generation']['categories']
+        statuses = self.config['data_generation']['statuses']
+        value_range = self.config['data_generation']['value_range']
+        
         current_time = datetime.now()
-        categories = config['categories']
-        value_min = config['value_range']['min']
-        value_max = config['value_range']['max']
         
         data = []
-        for i in range(1, num_records + 1):
-            record = (
-                f"{i:010d}",  # id with leading zeros
-                f"Product {i}",
-                float(random.randint(value_min, value_max)),
-                "ACTIVE",
-                categories[i % len(categories)],
-                "SAP_ERP",
-                current_time,
-                "SYSTEM",
-                current_time,
-                "SYSTEM"
-            )
+        for i in range(1, num_rows + 1):
+            record = {
+                "id": f"{i:010d}",
+                "name": f"Product {i}",
+                "value": float(random.randint(value_range['min'], value_range['max'])),
+                "status": random.choice(statuses),
+                "category": categories[i % len(categories)],
+                "source_system": "SAP_ERP",
+                "created_at": current_time,
+                "created_by": "SYSTEM",
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            }
             data.append(record)
         
         # Create DataFrame
         df = self.spark.createDataFrame(data, schema)
         
-        # Write to output
-        output_path = config['output_paths']['source_data']
-        output_format = config['output_format']
+        # Write to table/file
+        output_path = self.config['paths']['source_data']
+        df.write.mode("overwrite").parquet(output_path)
         
-        self._write_dataframe(df, output_path, output_format, "source_data")
+        self.logger.info(f"✓ Created {df.count()} source records at {output_path}")
         
-        self.logger.info(f"✓ Created {num_records} source records")
+        return df
     
-    def create_config_data(self) -> None:
-        """Generate configuration key-value pairs."""
+    def create_config_data(self):
+        """Create configuration key-value pairs"""
         self.logger.info("Creating configuration data...")
         
-        # Define schema
         schema = StructType([
             StructField("config_key", StringType(), False),
             StructField("config_value", StringType(), False),
@@ -146,63 +110,130 @@ class DataInitializer:
         
         current_time = datetime.now()
         
-        # Configuration entries
         config_entries = [
-            ("BATCH_SIZE", "1000", "Default batch size for data loading", 
-             "PERFORMANCE", True),
-            ("MAX_RETRIES", "3", "Maximum number of retries on error", 
-             "ERROR_HANDLING", True),
-            ("ALERT_EMAIL", "admin@example.com", "Email address for alerts", 
-             "NOTIFICATION", True),
-            ("LOG_RETENTION_DAYS", "90", "Number of days to retain logs", 
-             "MAINTENANCE", True),
-            ("ENABLE_RECONCILIATION", "true", "Enable data reconciliation after load", 
-             "DATA_QUALITY", True),
-            ("PREMIUM_MULTIPLIER", "1.5", "Value multiplier for premium category", 
-             "BUSINESS_RULE", True),
-            ("STANDARD_MULTIPLIER", "1.2", "Value multiplier for standard category", 
-             "BUSINESS_RULE", True),
-            ("BASIC_MULTIPLIER", "1.0", "Value multiplier for basic category", 
-             "BUSINESS_RULE", True),
-            ("VIP_MULTIPLIER", "2.0", "Value multiplier for VIP category", 
-             "BUSINESS_RULE", True),
-            ("TRIAL_MULTIPLIER", "0.8", "Value multiplier for trial category", 
-             "BUSINESS_RULE", True),
-            ("HIGH_VALUE_THRESHOLD", "750", "Threshold for high value classification", 
-             "BUSINESS_RULE", True),
-            ("MEDIUM_VALUE_THRESHOLD", "300", "Threshold for medium value classification", 
-             "BUSINESS_RULE", True),
-            ("ENABLE_DATA_PROFILING", "true", "Enable automatic data profiling", 
-             "DATA_QUALITY", True),
-            ("ENABLE_ANOMALY_DETECTION", "true", "Enable anomaly detection", 
-             "DATA_QUALITY", True),
-            ("PARALLEL_JOBS", "4", "Number of parallel ETL jobs", 
-             "PERFORMANCE", True),
-            ("CHECKPOINT_INTERVAL", "100", "Checkpoint interval in records", 
-             "PERFORMANCE", True),
+            {
+                "config_key": "BATCH_SIZE",
+                "config_value": "1000",
+                "description": "Default batch size for data loading",
+                "config_type": "PERFORMANCE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "MAX_RETRIES",
+                "config_value": "3",
+                "description": "Maximum number of retries on error",
+                "config_type": "ERROR_HANDLING",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "ALERT_EMAIL",
+                "config_value": "admin@example.com",
+                "description": "Email address for alerts",
+                "config_type": "NOTIFICATION",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "LOG_RETENTION_DAYS",
+                "config_value": "90",
+                "description": "Number of days to retain logs",
+                "config_type": "MAINTENANCE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "ENABLE_RECONCILIATION",
+                "config_value": "true",
+                "description": "Enable data reconciliation after load",
+                "config_type": "DATA_QUALITY",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "PREMIUM_MULTIPLIER",
+                "config_value": "1.5",
+                "description": "Value multiplier for premium category",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "STANDARD_MULTIPLIER",
+                "config_value": "1.2",
+                "description": "Value multiplier for standard category",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "BASIC_MULTIPLIER",
+                "config_value": "1.0",
+                "description": "Value multiplier for basic category",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "VIP_MULTIPLIER",
+                "config_value": "2.0",
+                "description": "Value multiplier for VIP category",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "TRIAL_MULTIPLIER",
+                "config_value": "0.8",
+                "description": "Value multiplier for trial category",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "HIGH_VALUE_THRESHOLD",
+                "config_value": "750",
+                "description": "Threshold for high value classification",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            },
+            {
+                "config_key": "MEDIUM_VALUE_THRESHOLD",
+                "config_value": "300",
+                "description": "Threshold for medium value classification",
+                "config_type": "BUSINESS_RULE",
+                "is_active": True,
+                "changed_at": current_time,
+                "changed_by": "SYSTEM"
+            }
         ]
         
-        data = [
-            (key, value, desc, ctype, active, current_time, "SYSTEM")
-            for key, value, desc, ctype, active in config_entries
-        ]
+        df = self.spark.createDataFrame(config_entries, schema)
         
-        df = self.spark.createDataFrame(data, schema)
+        output_path = self.config['paths']['config_data']
+        df.write.mode("overwrite").parquet(output_path)
         
-        # Write to output
-        config = self.config['data_init']
-        output_path = config['output_paths']['config_data']
-        output_format = config['output_format']
+        self.logger.info(f"✓ Created {df.count()} configuration entries at {output_path}")
         
-        self._write_dataframe(df, output_path, output_format, "config_data")
-        
-        self.logger.info(f"✓ Created {len(config_entries)} configuration entries")
+        return df
     
-    def create_schedule_data(self) -> None:
-        """Generate ETL schedule definitions."""
+    def create_schedule_data(self):
+        """Create ETL schedule definitions"""
         self.logger.info("Creating schedule data...")
         
-        # Define schema
         schema = StructType([
             StructField("schedule_id", StringType(), False),
             StructField("schedule_name", StringType(), False),
@@ -210,173 +241,189 @@ class DataInitializer:
             StructField("frequency", StringType(), False),
             StructField("start_date", StringType(), False),
             StructField("start_time", StringType(), False),
-            StructField("end_date", StringType(), True),
             StructField("is_active", BooleanType(), False),
-            StructField("cron_expression", StringType(), True),
-            StructField("retry_count", IntegerType(), False),
-            StructField("timeout_minutes", IntegerType(), False),
             StructField("created_by", StringType(), False),
-            StructField("created_at", TimestampType(), False)
+            StructField("created_at", TimestampType(), False),
+            StructField("parameters", StringType(), True)
         ])
         
         current_time = datetime.now()
         current_date = current_time.strftime("%Y-%m-%d")
-        end_date = (current_time + timedelta(days=365)).strftime("%Y-%m-%d")
         
-        # Schedule entries
-        schedule_entries = [
-            ("SCHED001", "Daily Full Load", "FULL", "DAILY", 
-             current_date, "02:00:00", end_date, True, 
-             "0 2 * * *", 3, 120),
-            ("SCHED002", "Hourly Incremental", "INCREMENTAL", "HOURLY", 
-             current_date, "00:00:00", end_date, True, 
-             "0 * * * *", 2, 30),
-            ("SCHED003", "Weekly Reconciliation", "RECONCILIATION", "WEEKLY", 
-             current_date, "18:00:00", end_date, False, 
-             "0 18 * * 0", 1, 240),
-            ("SCHED004", "Monthly Archive", "ARCHIVE", "MONTHLY", 
-             current_date, "03:00:00", end_date, True, 
-             "0 3 1 * *", 1, 480),
-            ("SCHED005", "Real-time Stream", "STREAMING", "CONTINUOUS", 
-             current_date, "00:00:00", end_date, True, 
-             None, 0, 0),
+        schedules = [
+            {
+                "schedule_id": "SCHED001",
+                "schedule_name": "Daily Full Load",
+                "etl_type": "FULL",
+                "frequency": "DAILY",
+                "start_date": current_date,
+                "start_time": "02:00:00",
+                "is_active": True,
+                "created_by": "SYSTEM",
+                "created_at": current_time,
+                "parameters": '{"source_type": "DATABASE", "target_type": "DATABASE", "batch_size": 1000}'
+            },
+            {
+                "schedule_id": "SCHED002",
+                "schedule_name": "Hourly Incremental",
+                "etl_type": "INCREMENTAL",
+                "frequency": "HOURLY",
+                "start_date": current_date,
+                "start_time": "00:00:00",
+                "is_active": True,
+                "created_by": "SYSTEM",
+                "created_at": current_time,
+                "parameters": '{"source_type": "INCREMENTAL", "target_type": "DATABASE", "batch_size": 500}'
+            },
+            {
+                "schedule_id": "SCHED003",
+                "schedule_name": "Weekly Reconciliation",
+                "etl_type": "RECONCILIATION",
+                "frequency": "WEEKLY",
+                "start_date": current_date,
+                "start_time": "18:00:00",
+                "is_active": False,
+                "created_by": "SYSTEM",
+                "created_at": current_time,
+                "parameters": '{"reconciliation_days": 7, "alert_on_mismatch": true}'
+            },
+            {
+                "schedule_id": "SCHED004",
+                "schedule_name": "Monthly Archive",
+                "etl_type": "ARCHIVE",
+                "frequency": "MONTHLY",
+                "start_date": current_date,
+                "start_time": "01:00:00",
+                "is_active": True,
+                "created_by": "SYSTEM",
+                "created_at": current_time,
+                "parameters": '{"retention_months": 12, "compression": "gzip"}'
+            },
+            {
+                "schedule_id": "SCHED005",
+                "schedule_name": "Quality Check - Daily",
+                "etl_type": "QUALITY_CHECK",
+                "frequency": "DAILY",
+                "start_date": current_date,
+                "start_time": "06:00:00",
+                "is_active": True,
+                "created_by": "SYSTEM",
+                "created_at": current_time,
+                "parameters": '{"check_types": ["completeness", "uniqueness", "validity"], "alert_threshold": 0.95}'
+            }
         ]
         
-        data = [
-            (sid, name, etype, freq, sdate, stime, edate, active, 
-             cron, retry, timeout, "SYSTEM", current_time)
-            for sid, name, etype, freq, sdate, stime, edate, active, 
-            cron, retry, timeout in schedule_entries
-        ]
+        df = self.spark.createDataFrame(schedules, schema)
+        
+        output_path = self.config['paths']['schedule_data']
+        df.write.mode("overwrite").parquet(output_path)
+        
+        self.logger.info(f"✓ Created {df.count()} schedule entries at {output_path}")
+        
+        return df
+    
+    def create_staging_data(self, num_rows: int = 50):
+        """Create sample staging data"""
+        self.logger.info(f"Creating {num_rows} staging records...")
+        
+        schema = StructType([
+            StructField("id", StringType(), False),
+            StructField("run_id", StringType(), False),
+            StructField("status", StringType(), False),
+            StructField("raw_data", StringType(), True),
+            StructField("parsed_data", StringType(), True),
+            StructField("created_at", TimestampType(), False),
+            StructField("processed_at", TimestampType(), True)
+        ])
+        
+        current_time = datetime.now()
+        
+        data = []
+        for i in range(1, num_rows + 1):
+            record = {
+                "id": f"STG{i:07d}",
+                "run_id": "RUN001",
+                "status": "READY" if i % 4 != 0 else "PROCESSED",
+                "raw_data": f'{{"product_id": "{i}", "value": {random.randint(50, 1000)}}}',
+                "parsed_data": None if i % 4 != 0 else f'{{"id": "{i}", "validated": true}}',
+                "created_at": current_time - timedelta(hours=random.randint(1, 24)),
+                "processed_at": current_time if i % 4 == 0 else None
+            }
+            data.append(record)
         
         df = self.spark.createDataFrame(data, schema)
         
-        # Write to output
-        config = self.config['data_init']
-        output_path = config['output_paths']['schedule_data']
-        output_format = config['output_format']
+        output_path = self.config['paths']['staging_data']
+        df.write.mode("overwrite").parquet(output_path)
         
-        self._write_dataframe(df, output_path, output_format, "schedule_data")
+        self.logger.info(f"✓ Created {df.count()} staging records at {output_path}")
         
-        self.logger.info(f"✓ Created {len(schedule_entries)} schedule entries")
+        return df
     
-    def create_category_metadata(self) -> None:
-        """Generate category metadata with business rules."""
-        self.logger.info("Creating category metadata...")
-        
-        schema = StructType([
-            StructField("category", StringType(), False),
-            StructField("priority_level", IntegerType(), False),
-            StructField("multiplier", DecimalType(3, 2), False),
-            StructField("min_value", DecimalType(15, 2), False),
-            StructField("max_value", DecimalType(15, 2), False),
-            StructField("description", StringType(), True),
-            StructField("is_active", BooleanType(), False)
-        ])
-        
-        categories = [
-            ("PREMIUM", 1, 1.5, 500.0, 10000.0, 
-             "Premium tier with highest priority and 50% value boost", True),
-            ("VIP", 1, 2.0, 1000.0, 20000.0, 
-             "VIP tier with double value multiplier", True),
-            ("STANDARD", 2, 1.2, 100.0, 5000.0, 
-             "Standard tier with 20% value boost", True),
-            ("BASIC", 3, 1.0, 50.0, 1000.0, 
-             "Basic tier with no multiplier", True),
-            ("TRIAL", 4, 0.8, 10.0, 500.0, 
-             "Trial tier with reduced multiplier", True),
-        ]
-        
-        df = self.spark.createDataFrame(categories, schema)
-        
-        output_path = "data/category_metadata"
-        output_format = self.config['data_init']['output_format']
-        
-        self._write_dataframe(df, output_path, output_format, "category_metadata")
-        
-        self.logger.info(f"✓ Created {len(categories)} category metadata entries")
-    
-    def _write_dataframe(self, df, path: str, format: str, name: str) -> None:
-        """
-        Write DataFrame to storage.
-        
-        Args:
-            df: DataFrame to write
-            path: Output path
-            format: Output format (parquet, csv, etc.)
-            name: Dataset name for logging
-        """
-        try:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            
-            df.write.mode("overwrite").format(format).save(path)
-            
-            record_count = df.count()
-            self.logger.info(f"Wrote {record_count} records to {path}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to write {name}: {str(e)}")
-            raise
-    
-    def initialize_all(self) -> None:
-        """Initialize all sample data."""
+    def initialize_all(self, num_source_rows: int = 100, num_staging_rows: int = 50):
+        """Initialize all data tables"""
         self.logger.info("=" * 60)
-        self.logger.info("Starting data initialization...")
+        self.logger.info("Starting Data Initialization")
         self.logger.info("=" * 60)
         
         try:
-            self.create_sample_source_data()
-            self.create_config_data()
-            self.create_schedule_data()
-            self.create_category_metadata()
+            # Create all data
+            source_df = self.create_sample_source_data(num_source_rows)
+            config_df = self.create_config_data()
+            schedule_df = self.create_schedule_data()
+            staging_df = self.create_staging_data(num_staging_rows)
             
+            # Summary
             self.logger.info("=" * 60)
-            self.logger.info("✓ Data initialization completed successfully")
+            self.logger.info("Data Initialization Complete")
             self.logger.info("=" * 60)
+            self.logger.info(f"✓ Source records: {source_df.count()}")
+            self.logger.info(f"✓ Config entries: {config_df.count()}")
+            self.logger.info(f"✓ Schedule entries: {schedule_df.count()}")
+            self.logger.info(f"✓ Staging records: {staging_df.count()}")
+            self.logger.info("=" * 60)
+            
+            return {
+                'source': source_df,
+                'config': config_df,
+                'schedule': schedule_df,
+                'staging': staging_df
+            }
             
         except Exception as e:
-            self.logger.error(f"Data initialization failed: {str(e)}")
+            self.logger.error(f"✗ Failed to initialize data: {str(e)}")
             raise
-    
-    def show_summary(self) -> None:
-        """Display summary of generated data."""
-        config = self.config['data_init']
-        
-        print("\n" + "=" * 60)
-        print("DATA INITIALIZATION SUMMARY")
-        print("=" * 60)
-        
-        paths = config['output_paths']
-        for name, path in paths.items():
-            try:
-                df = self.spark.read.format(config['output_format']).load(path)
-                count = df.count()
-                print(f"  {name:20s}: {count:6d} records -> {path}")
-            except Exception:
-                print(f"  {name:20s}: Not found")
-        
-        print("=" * 60 + "\n")
 
 
 def main():
-    """Main execution function."""
+    """Main execution function"""
     # Create Spark session
     spark = SparkSession.builder \
         .appName("ETL Data Initialization") \
-        .config("spark.sql.shuffle.partitions", "4") \
-        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.warehouse.dir", "./spark-warehouse") \
         .getOrCreate()
     
     try:
         # Initialize data
-        initializer = DataInitializer(spark)
-        initializer.initialize_all()
-        initializer.show_summary()
+        initializer = DataInitializer(spark, "config.yaml")
+        results = initializer.initialize_all(num_source_rows=100, num_staging_rows=50)
         
-    except Exception as e:
-        logging.error(f"Initialization failed: {str(e)}")
-        raise
-    
+        # Display sample data
+        print("\n" + "=" * 60)
+        print("Sample Source Data (first 5 rows):")
+        print("=" * 60)
+        results['source'].show(5, truncate=False)
+        
+        print("\n" + "=" * 60)
+        print("Configuration Data:")
+        print("=" * 60)
+        results['config'].show(truncate=False)
+        
+        print("\n" + "=" * 60)
+        print("Schedule Data:")
+        print("=" * 60)
+        results['schedule'].show(truncate=False)
+        
     finally:
         spark.stop()
 
