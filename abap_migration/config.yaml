@@ -1,105 +1,85 @@
-# Data Quality Validation Configuration
+# ETL Data Initialization Configuration
 
-data_quality:
-  # Completeness checks
-  required_fields:
-    - id
-    - name
-    - value
-    - category
-    - status
+data_init:
+  # Number of source records to generate
+  num_source_records: 100
   
-  completeness_threshold: 95.0  # Minimum percentage of non-null values
+  # Category definitions
+  categories:
+    - PREMIUM
+    - STANDARD
+    - BASIC
+    - VIP
+    - TRIAL
   
-  # Uniqueness checks
-  unique_key: id
-  uniqueness_threshold: 100.0  # Percentage of unique records required
+  # Value range for random generation
+  value_range:
+    min: 50
+    max: 1000
   
-  # Validity rules
-  validity_rules:
-    min_value: 0
-    max_value: 999999
-    valid_categories:
-      - PREMIUM
-      - STANDARD
-      - BASIC
-      - VIP
-      - TRIAL
-    valid_statuses:
-      - ACTIVE
-      - INACTIVE
-      - PENDING
-      - TRANSFORMED
-      - HIGH_VALUE
-      - MEDIUM_VALUE
-      - LOW_VALUE
-      - INVALID
+  # Output configuration
+  output_format: parquet  # parquet, csv, json
+  output_paths:
+    source_data: data/source
+    config_data: data/config
+    schedule_data: data/schedule
   
-  # Business rules
-  business_rules:
-    premium_min_value: 500
-    high_priority_min_value: 750
-    enforce_status_rules: true
-    validate_name_format: true
-    violation_severity: ERROR  # ERROR or WARNING
-  
-  # Referential integrity
-  referential_integrity:
-    validate_category_reference: false
-    category_reference_path: /data/reference/categories
-  
-  # Expected schema validation
-  expected_schema:
-    id: StringType
-    name: StringType
-    value: DoubleType
-    transformed_value: DoubleType
-    status: StringType
-    category: StringType
-    priority: IntegerType
-    etl_run_id: StringType
-    processed_at: TimestampType
-  
-  # Anomaly detection
-  anomaly_detection:
-    enabled: true
-    outlier_method: iqr  # iqr or zscore
-    outlier_threshold: 1.5
-  
-  # Profiling settings
-  profiling:
-    enabled: true
-    sample_size: 10000  # Number of records to sample for profiling
-    calculate_percentiles: true
-  
-  # Thresholds for alerts
-  alert_thresholds:
-    error_rate: 5.0  # Percentage
-    null_rate: 10.0  # Percentage
-    duplicate_rate: 1.0  # Percentage
-
-# Spark configuration
-spark:
-  app_name: DataQualityValidation
-  master: local[*]
-  config:
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
-    spark.sql.shuffle.partitions: 200
-    spark.sql.sources.partitionOverwriteMode: dynamic
+  # Data quality settings
+  enable_validation: true
+  enable_profiling: true
 
 # Logging configuration
 logging:
-  level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  handlers:
-    - type: console
-    - type: file
-      filename: logs/data_quality_{date}.log
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  file: logs/data_init.log
 
-# Output paths
-output:
-  quality_metrics_path: /data/quality/metrics
-  quality_reports_path: /data/quality/reports
-  failed_records_path: /data/quality/failed_records
-  format: parquet  # parquet, delta, or csv
+# Spark configuration
+spark:
+  app_name: ETL_Data_Initialization
+  master: local[*]
+  configs:
+    spark.sql.shuffle.partitions: 4
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.driver.memory: 2g
+    spark.executor.memory: 2g
+
+# Database configuration (if using JDBC)
+database:
+  enabled: false
+  driver: org.postgresql.Driver
+  url: jdbc:postgresql://localhost:5432/etl_db
+  user: etl_user
+  password: ${DB_PASSWORD}  # Use environment variable
+  tables:
+    source: etl_source_data
+    config: etl_config
+    schedule: etl_schedule
+
+# Performance settings
+performance:
+  batch_size: 1000
+  parallel_tasks: 4
+  checkpoint_interval: 100
+  
+# Business rules
+business_rules:
+  multipliers:
+    PREMIUM: 1.5
+    STANDARD: 1.2
+    BASIC: 1.0
+    VIP: 2.0
+    TRIAL: 0.8
+  
+  thresholds:
+    high_value: 750
+    medium_value: 300
+    low_value: 0
+  
+  priorities:
+    PREMIUM: 1
+    VIP: 1
+    STANDARD: 2
+    BASIC: 3
+    TRIAL: 4
