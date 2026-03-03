@@ -1,112 +1,110 @@
-# ETL Configuration
-# Centralized configuration for PySpark ETL pipeline
+# PySpark Data Initialization Configuration
 
-spark:
-  app_name: "ETL_Pipeline"
-  master: "local[*]"
-  config:
-    spark.sql.shuffle.partitions: 200
-    spark.executor.memory: "4g"
-    spark.driver.memory: "2g"
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
+# Application settings
+app_name: "ETL Data Initialization"
+warehouse_dir: "/user/hive/warehouse"
 
-database:
-  source:
-    type: "jdbc"
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    user: "etl_user"
-    password: "${DB_PASSWORD}"  # Use environment variable
-    table: "zetl_source_data"
-    
-  target:
-    type: "jdbc"
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    user: "etl_user"
-    password: "${DB_PASSWORD}"
-    table: "zetl_target_data"
-    
-  staging:
-    type: "jdbc"
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    table: "zetl_staging"
+# Output settings
+output_format: "parquet"
+output_path: "/data/etl/initialized"
 
-extraction:
-  source_type: "DATABASE"  # DATABASE, STAGING, INCREMENTAL
-  default_filter: null
-  max_records: 0  # 0 = unlimited
-  fetch_size: 1000
+# Save options
+save_to_tables: true
+save_to_files: false
+show_samples: true
 
-transformation:
-  # Category multipliers
-  category_multipliers:
-    PREMIUM: 1.5
-    VIP: 2.0
-    STANDARD: 1.2
-    BASIC: 1.0
-    DEFAULT: 1.1
-  
-  # Priority thresholds
-  priority_thresholds:
-    high_value: 1000
-    medium_value: 500
-    low_value: 200
-  
-  # Status thresholds
-  status_thresholds:
-    high: 750
-    medium: 300
-  
-  # Validation rules
-  validation:
-    required_fields:
-      - id
-      - name
-      - value
-    value_min: 0
-    priority_min: 1
-    priority_max: 5
+# Table names
+tables:
+  source_data: "etl_source_data"
+  config: "etl_config"
+  schedule: "etl_schedule"
+  target_data: "etl_target_data"
+  staging: "etl_staging"
+  run_log: "etl_run_log"
+  error_log: "etl_error_log"
 
-loading:
-  target_type: "DATABASE"
-  batch_size: 1000
-  mode: "UPSERT"  # INSERT, UPDATE, UPSERT
-  enable_reconciliation: true
-  write_mode: "append"  # append, overwrite
+# Data generation settings
+default_rows: 100
+categories:
+  - "PREMIUM"
+  - "STANDARD"
+  - "BASIC"
+  - "VIP"
+  - "TRIAL"
 
-business_rules:
-  premium_boost: 1.2
-  high_value_priority: 1
-  normalize_whitespace: true
-  default_category: "UNCATEGORIZED"
+# Value ranges
+value_range:
+  min: 50
+  max: 1000
 
-logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/etl_pipeline.log"
-  console: true
+# Category multipliers
+category_multipliers:
+  PREMIUM: 1.5
+  STANDARD: 1.2
+  BASIC: 1.0
+  VIP: 2.0
+  TRIAL: 0.8
 
-monitoring:
-  enabled: true
-  metrics_interval: 60  # seconds
-  health_check_interval: 300  # seconds
-  alert_email: "admin@example.com"
-  error_rate_threshold: 20  # percentage
+# Thresholds
+thresholds:
+  high_value: 750.00
+  medium_value: 300.00
+  low_value: 0.00
 
-performance:
-  parallel_jobs: 4
-  retry_attempts: 3
-  retry_delay: 5  # seconds
-  timeout: 3600  # seconds
+# Performance settings
+batch_size: 1000
+max_retries: 3
+log_retention_days: 90
 
-data_quality:
-  enabled: true
-  checks:
-    - completeness
-    - uniqueness
-    - validity
-    - consistency
-  failure_threshold: 5  # percentage
+# Notification settings
+alert_email: "admin@example.com"
+enable_notifications: true
+
+# Data quality settings
+enable_reconciliation: true
+enable_validation: true
+enable_quality_checks: true
+
+# Spark configuration
+spark_config:
+  spark.sql.shuffle.partitions: 200
+  spark.sql.adaptive.enabled: true
+  spark.sql.adaptive.coalescePartitions.enabled: true
+  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+  spark.sql.sources.partitionOverwriteMode: "dynamic"
+
+# Logging
+log_level: "INFO"
+log_format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Schedule frequencies
+schedule_frequencies:
+  - "DAILY"
+  - "HOURLY"
+  - "WEEKLY"
+  - "MONTHLY"
+  - "CONTINUOUS"
+
+# ETL types
+etl_types:
+  - "FULL"
+  - "INCREMENTAL"
+  - "RECONCILIATION"
+  - "ARCHIVE"
+  - "STREAMING"
+
+# Source systems
+source_systems:
+  - "SAP_ERP"
+  - "SALESFORCE"
+  - "ORACLE_DB"
+  - "MYSQL"
+  - "API"
+
+# Status values
+status_values:
+  - "ACTIVE"
+  - "INACTIVE"
+  - "PENDING"
+  - "ARCHIVED"
+  - "DELETED"
