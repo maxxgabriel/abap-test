@@ -1,88 +1,191 @@
-# ETL Data Quality Configuration
+# PySpark ETL Framework Configuration
 
 # Spark Configuration
 spark:
-  app_name: "ETL_Data_Quality_Pipeline"
+  app_name: "ETL_Framework"
   master: "local[*]"
+  log_level: "WARN"
   config:
-    spark.sql.shuffle.partitions: "200"
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+    spark.sql.sources.partitionOverwriteMode: "dynamic"
 
-# Data Quality Thresholds
-quality_thresholds:
-  min_records: 1
-  max_records: 1000000
-  max_null_percentage: 10.0
-  max_pipeline_loss_pct: 5.0
-  max_duplicate_percentage: 1.0
-
-# Required Fields for Completeness Check
-required_fields:
-  - id
-  - name
-  - value
-  - category
-  - status
-
-# ID Field Configuration
-id_field: "id"
-
-# Profiling Configuration
-profiling:
-  enabled: true
-  include_column_stats: true
-  detect_anomalies: true
-  outlier_std_threshold: 3.0
-
-# Validation Rules
-validation_rules:
-  value:
-    min: 0
-    max: 1000000
-  transformed_value:
-    min: 0
-    max: 1500000
-  priority:
-    min: 1
-    max: 5
-  category:
-    allowed_values:
-      - PREMIUM
-      - STANDARD
-      - BASIC
-      - VIP
-      - TRIAL
-      - UNCATEGORIZED
-
-# Consistency Rules
-consistency_rules:
-  premium_multiplier: 1.2
-  high_value_threshold: 750
-  very_high_value_threshold: 1000
-
-# Anomaly Detection
-anomaly_detection:
-  enabled: true
-  outlier_detection: true
-  category_distribution_check: true
-  null_pattern_check: true
-  min_category_percentage: 1.0
-  max_category_percentage: 80.0
-
-# Pipeline Count Validation
-pipeline_validation:
-  enabled: true
-  track_counts: true
-  validate_stage_transitions: true
+# Database Configuration
+database:
+  source:
+    url: "jdbc:postgresql://localhost:5432/source_db"
+    driver: "org.postgresql.Driver"
+    user: "etl_user"
+    password_env: "DB_SOURCE_PASSWORD"
+    properties:
+      fetchsize: 1000
+  
+  target:
+    url: "jdbc:postgresql://localhost:5432/target_db"
+    driver: "org.postgresql.Driver"
+    user: "etl_user"
+    password_env: "DB_TARGET_PASSWORD"
+    properties:
+      batchsize: 1000
 
 # Logging Configuration
 logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  version: 1
+  disable_existing_loggers: false
+  formatters:
+    standard:
+      format: "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
+      datefmt: "%Y-%m-%d %H:%M:%S"
+    json:
+      class: pythonjsonlogger.jsonlogger.JsonFormatter
+      format: "%(asctime)s %(name)s %(levelname)s %(message)s"
   
-# Test Configuration
-test:
-  sample_data_size: 100
-  test_run_prefix: "TEST_"
-  mock_data: true
+  handlers:
+    console:
+      class: logging.StreamHandler
+      level: INFO
+      formatter: standard
+      stream: ext://sys.stdout
+    
+    file:
+      class: logging.handlers.RotatingFileHandler
+      level: DEBUG
+      formatter: standard
+      filename: logs/etl_framework.log
+      maxBytes: 10485760  # 10MB
+      backupCount: 5
+    
+    error_file:
+      class: logging.handlers.RotatingFileHandler
+      level: ERROR
+      formatter: standard
+      filename: logs/etl_errors.log
+      maxBytes: 10485760
+      backupCount: 5
+  
+  loggers:
+    etl_framework:
+      level: DEBUG
+      handlers: [console, file, error_file]
+      propagate: false
+  
+  root:
+    level: INFO
+    handlers: [console, file]
+
+# ETL Configuration
+etl:
+  batch_size: 1000
+  max_records: 0  # 0 means no limit
+  max_retries: 3
+  retry_delay: 5  # seconds
+  enable_reconciliation: true
+  
+  extraction:
+    source_type: "DATABASE"
+    incremental_field: "changed_at"
+    staging_path: "staging/"
+  
+  transformation:
+    apply_business_rules: true
+    enable_enrichment: true
+    validation_mode: "strict"
+  
+  loading:
+    target_type: "DATABASE"
+    load_mode: "upsert"
+    partition_by: ["category"]
+    save_mode: "overwrite"
+
+# Data Quality Configuration
+data_quality:
+  enabled: true
+  checks:
+    completeness: true
+    uniqueness: true
+    validity: true
+    consistency: true
+  
+  thresholds:
+    error_rate_warning: 5.0  # percentage
+    error_rate_critical: 10.0
+    null_rate_threshold: 5.0
+  
+  profile_data: true
+  detect_anomalies: true
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  dashboard_days: 7
+  metrics_retention_days: 90
+  
+  alerts:
+    enabled: true
+    email_recipients: ["admin@example.com"]
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    smtp_user_env: "SMTP_USER"
+    smtp_password_env: "SMTP_PASSWORD"
+  
+  health_check:
+    max_running_jobs: 5
+    error_rate_warning: 20.0
+    error_rate_critical: 50.0
+
+# Business Rules Configuration
+business_rules:
+  categories:
+    PREMIUM:
+      value_multiplier: 1.5
+      min_priority: 1
+    STANDARD:
+      value_multiplier: 1.0
+      min_priority: 3
+    BASIC:
+      value_multiplier: 0.8
+      min_priority: 4
+    VIP:
+      value_multiplier: 2.0
+      min_priority: 1
+    TRIAL:
+      value_multiplier: 0.5
+      min_priority: 5
+  
+  status_thresholds:
+    high_value: 750
+    medium_value: 300
+  
+  priority_rules:
+    high_value_threshold: 1000
+    value_based_priority: true
+
+# Paths Configuration
+paths:
+  staging: "staging/"
+  archive: "archive/"
+  error: "error/"
+  logs: "logs/"
+  checkpoints: "checkpoints/"
+
+# Schedule Configuration
+schedule:
+  enabled: false
+  jobs:
+    daily_full_load:
+      type: "FULL"
+      cron: "0 2 * * *"  # 2 AM daily
+      enabled: true
+    
+    hourly_incremental:
+      type: "INCREMENTAL"
+      cron: "0 * * * *"  # Every hour
+      enabled: true
+    
+    weekly_reconciliation:
+      type: "RECONCILIATION"
+      cron: "0 18 * * 0"  # 6 PM every Sunday
+      enabled: false
