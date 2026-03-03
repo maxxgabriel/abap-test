@@ -1,187 +1,165 @@
 """
 ETL Data Extraction Module
-Extracts data from various sources including database, staging, and incremental loads.
+
+Migrated from ABAP zcl_etl_extractor
+Handles data extraction from various sources including database, staging, and incremental loads.
 """
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType
-from datetime import datetime
 from typing import Optional
+from datetime import datetime
 import logging
+
+from src.logger import ETLLogger
 
 
 class ETLExtractor:
-    """Handles data extraction from multiple source types."""
-    
-    def __init__(self, spark: SparkSession, source_type: str = "DATABASE", run_id: str = None):
+    """
+    Data extractor supporting multiple source types:
+    - DATABASE: Full extraction from source tables
+    - STAGING: Extract from staging area
+    - INCREMENTAL: Extract only changed records since last run
+    """
+
+    SOURCE_SCHEMA = StructType([
+        StructField("id", StringType(), False),
+        StructField("name", StringType(), True),
+        StructField("value", DecimalType(15, 2), True),
+        StructField("status", StringType(), True),
+        StructField("category", StringType(), True),
+        StructField("source_system", StringType(), True),
+        StructField("created_at", TimestampType(), True),
+        StructField("created_by", StringType(), True),
+        StructField("changed_at", TimestampType(), True),
+        StructField("changed_by", StringType(), True),
+    ])
+
+    def __init__(self, spark: SparkSession, source_type: str, run_id: str, config: dict):
         """
-        Initialize the extractor.
-        
+        Initialize extractor
+
         Args:
-            spark: Active SparkSession
+            spark: SparkSession instance
             source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
             run_id: Unique run identifier
+            config: Configuration dictionary
         """
         self.spark = spark
         self.source_type = source_type.upper()
-        self.run_id = run_id or self._generate_run_id()
-        self.logger = logging.getLogger(__name__)
-        
-    def _generate_run_id(self) -> str:
-        """Generate unique run ID."""
-        return f"RUN_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
-    def _get_source_schema(self) -> StructType:
-        """Define schema for source data."""
-        return StructType([
-            StructField("id", StringType(), False),
-            StructField("name", StringType(), True),
-            StructField("value", DecimalType(15, 2), True),
-            StructField("status", StringType(), True),
-            StructField("category", StringType(), True),
-            StructField("source_system", StringType(), True),
-            StructField("created_at", TimestampType(), True),
-            StructField("created_by", StringType(), True),
-            StructField("changed_at", TimestampType(), True),
-            StructField("changed_by", StringType(), True),
-        ])
-    
-    def extract_data(self, filter_condition: Optional[str] = None, 
-                     max_records: int = 0) -> DataFrame:
+        self.run_id = run_id
+        self.config = config
+        self.logger = ETLLogger.get_instance()
+
+    def extract_data(self, filter_condition: Optional[str] = None, max_records: int = 0) -> DataFrame:
         """
-        Extract data based on source type.
-        
+        Extract data based on source type
+
         Args:
-            filter_condition: Optional SQL filter condition
-            max_records: Maximum records to extract (0 = no limit)
-            
+            filter_condition: Optional SQL WHERE clause
+            max_records: Maximum records to extract (0 = unlimited)
+
         Returns:
             DataFrame with extracted data
         """
-        self.logger.info(f"Starting extraction - Source: {self.source_type}, Run ID: {self.run_id}")
-        
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Starting extraction - Source: {self.source_type}, Run ID: {self.run_id}"
+        )
+
         try:
             if self.source_type == "DATABASE":
-                df = self.extract_from_database(filter_condition)
+                df = self._extract_from_database(filter_condition)
             elif self.source_type == "STAGING":
-                df = self.extract_from_staging(self.run_id)
+                df = self._extract_from_staging()
             elif self.source_type == "INCREMENTAL":
-                df = self.extract_incremental()
+                df = self._extract_incremental()
             else:
-                df = self.extract_from_database(filter_condition)
-            
+                self.logger.log_warning(
+                    component="EXTRACTOR",
+                    message=f"Unknown source type: {self.source_type}, defaulting to DATABASE"
+                )
+                df = self._extract_from_database(filter_condition)
+
             # Apply max records limit
             if max_records > 0:
                 df = df.limit(max_records)
-            
+
             record_count = df.count()
-            self.logger.info(f"Extracted {record_count} records")
-            
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Extracted {record_count} records"
+            )
+
             return df
-            
+
         except Exception as e:
-            self.logger.error(f"Extraction failed: {str(e)}")
+            self.logger.log_error(
+                component="EXTRACTOR",
+                message="Extraction failed",
+                details=str(e)
+            )
             raise
-    
-    def extract_from_database(self, filter_condition: Optional[str] = None) -> DataFrame:
-        """
-        Extract from database source.
-        
-        Args:
-            filter_condition: SQL WHERE clause condition
-            
-        Returns:
-            DataFrame with database data
-        """
-        self.logger.info("Extracting from database")
-        
-        query = "(SELECT * FROM etl_source_data"
+
+    def _extract_from_database(self, filter_condition: Optional[str] = None) -> DataFrame:
+        """Extract from source database table"""
+        source_table = self.config.get("source_table", "etl_source_data")
+
+        query = f"SELECT * FROM {source_table}"
         if filter_condition:
             query += f" WHERE {filter_condition}"
-        query += " LIMIT 1000) as source"
-        
+
         df = self.spark.read \
             .format("jdbc") \
-            .option("url", self.spark.conf.get("spark.etl.source.jdbc.url")) \
-            .option("dbtable", query) \
-            .option("user", self.spark.conf.get("spark.etl.source.jdbc.user")) \
-            .option("password", self.spark.conf.get("spark.etl.source.jdbc.password")) \
-            .option("driver", self.spark.conf.get("spark.etl.source.jdbc.driver")) \
+            .option("url", self.config["jdbc_url"]) \
+            .option("dbtable", f"({query}) as src") \
+            .option("user", self.config.get("db_user", "")) \
+            .option("password", self.config.get("db_password", "")) \
+            .option("driver", self.config.get("jdbc_driver", "org.postgresql.Driver")) \
             .load()
-        
+
         return df
-    
-    def extract_from_staging(self, run_id: str) -> DataFrame:
-        """
-        Extract from staging area.
-        
-        Args:
-            run_id: Run identifier to extract
-            
-        Returns:
-            DataFrame with staging data
-        """
-        self.logger.info(f"Extracting from staging for run_id: {run_id}")
-        
-        query = f"""(
-            SELECT * FROM etl_staging
-            WHERE run_id = '{run_id}' AND status = 'READY'
-        ) as staging"""
-        
+
+    def _extract_from_staging(self) -> DataFrame:
+        """Extract from staging area"""
+        staging_path = self.config.get("staging_path", f"/data/staging/{self.run_id}")
+
         df = self.spark.read \
-            .format("jdbc") \
-            .option("url", self.spark.conf.get("spark.etl.source.jdbc.url")) \
-            .option("dbtable", query) \
-            .option("user", self.spark.conf.get("spark.etl.source.jdbc.user")) \
-            .option("password", self.spark.conf.get("spark.etl.source.jdbc.password")) \
-            .option("driver", self.spark.conf.get("spark.etl.source.jdbc.driver")) \
-            .load()
-        
+            .format(self.config.get("staging_format", "parquet")) \
+            .schema(self.SOURCE_SCHEMA) \
+            .load(staging_path)
+
+        df = df.filter(df.status == "READY")
+
         return df
-    
-    def extract_incremental(self) -> DataFrame:
-        """
-        Extract only changed records since last successful run.
-        
-        Returns:
-            DataFrame with incremental data
-        """
-        self.logger.info("Extracting incremental data")
-        
-        # Get last successful run time
-        last_run_query = """(
-            SELECT MAX(end_time) as last_run
-            FROM etl_run_log
+
+    def _extract_incremental(self) -> DataFrame:
+        """Extract only changed records since last successful run"""
+        # Get last successful run timestamp
+        run_log_table = self.config.get("run_log_table", "etl_run_log")
+
+        last_run_query = f"""
+            SELECT MAX(end_time) as last_run_time 
+            FROM {run_log_table} 
             WHERE status = 'SUCCESS'
-        ) as last_run"""
-        
+        """
+
         last_run_df = self.spark.read \
             .format("jdbc") \
-            .option("url", self.spark.conf.get("spark.etl.source.jdbc.url")) \
-            .option("dbtable", last_run_query) \
-            .option("user", self.spark.conf.get("spark.etl.source.jdbc.user")) \
-            .option("password", self.spark.conf.get("spark.etl.source.jdbc.password")) \
-            .option("driver", self.spark.conf.get("spark.etl.source.jdbc.driver")) \
+            .option("url", self.config["jdbc_url"]) \
+            .option("dbtable", f"({last_run_query}) as lr") \
+            .option("user", self.config.get("db_user", "")) \
+            .option("password", self.config.get("db_password", "")) \
             .load()
-        
-        last_run_time = last_run_df.collect()[0]["last_run"]
-        
+
+        last_run_time = last_run_df.first()["last_run_time"] if last_run_df.count() > 0 else None
+
         if last_run_time:
-            query = f"""(
-                SELECT * FROM etl_source_data
-                WHERE changed_at > '{last_run_time}'
-            ) as incremental"""
+            filter_condition = f"changed_at > '{last_run_time}'"
+            return self._extract_from_database(filter_condition)
         else:
-            # First run - extract all
-            query = "(SELECT * FROM etl_source_data) as incremental"
-        
-        df = self.spark.read \
-            .format("jdbc") \
-            .option("url", self.spark.conf.get("spark.etl.source.jdbc.url")) \
-            .option("dbtable", query) \
-            .option("user", self.spark.conf.get("spark.etl.source.jdbc.user")) \
-            .option("password", self.spark.conf.get("spark.etl.source.jdbc.password")) \
-            .option("driver", self.spark.conf.get("spark.etl.source.jdbc.driver")) \
-            .load()
-        
-        return df
+            self.logger.log_warning(
+                component="EXTRACTOR",
+                message="No previous successful run found, performing full extraction"
+            )
+            return self._extract_from_database()
