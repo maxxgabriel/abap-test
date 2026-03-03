@@ -1,68 +1,105 @@
-# Delta Lake Loader Configuration
+# Data Quality Validation Configuration
 
-# Spark Configuration
+data_quality:
+  # Completeness checks
+  required_fields:
+    - id
+    - name
+    - value
+    - category
+    - status
+  
+  completeness_threshold: 95.0  # Minimum percentage of non-null values
+  
+  # Uniqueness checks
+  unique_key: id
+  uniqueness_threshold: 100.0  # Percentage of unique records required
+  
+  # Validity rules
+  validity_rules:
+    min_value: 0
+    max_value: 999999
+    valid_categories:
+      - PREMIUM
+      - STANDARD
+      - BASIC
+      - VIP
+      - TRIAL
+    valid_statuses:
+      - ACTIVE
+      - INACTIVE
+      - PENDING
+      - TRANSFORMED
+      - HIGH_VALUE
+      - MEDIUM_VALUE
+      - LOW_VALUE
+      - INVALID
+  
+  # Business rules
+  business_rules:
+    premium_min_value: 500
+    high_priority_min_value: 750
+    enforce_status_rules: true
+    validate_name_format: true
+    violation_severity: ERROR  # ERROR or WARNING
+  
+  # Referential integrity
+  referential_integrity:
+    validate_category_reference: false
+    category_reference_path: /data/reference/categories
+  
+  # Expected schema validation
+  expected_schema:
+    id: StringType
+    name: StringType
+    value: DoubleType
+    transformed_value: DoubleType
+    status: StringType
+    category: StringType
+    priority: IntegerType
+    etl_run_id: StringType
+    processed_at: TimestampType
+  
+  # Anomaly detection
+  anomaly_detection:
+    enabled: true
+    outlier_method: iqr  # iqr or zscore
+    outlier_threshold: 1.5
+  
+  # Profiling settings
+  profiling:
+    enabled: true
+    sample_size: 10000  # Number of records to sample for profiling
+    calculate_percentiles: true
+  
+  # Thresholds for alerts
+  alert_thresholds:
+    error_rate: 5.0  # Percentage
+    null_rate: 10.0  # Percentage
+    duplicate_rate: 1.0  # Percentage
+
+# Spark configuration
 spark:
-  app_name: "ETL_Delta_Loader"
-  master: "local[*]"
-  log_level: "INFO"
-  configs:
-    spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
-    spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.databricks.delta.retentionDurationCheck.enabled: "false"
-    spark.databricks.delta.schema.autoMerge.enabled: "true"
+  app_name: DataQualityValidation
+  master: local[*]
+  config:
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.sql.shuffle.partitions: 200
+    spark.sql.sources.partitionOverwriteMode: dynamic
 
-# Loader Configuration
-loader:
-  batch_size: 1000
-  target_path: "/data/delta/target_table"
-  enable_reconciliation: true
-  compact_on_complete: false
-  vacuum_retention_hours: 168  # 7 days
-  
-# Source Configuration
-source:
-  format: "parquet"
-  path: "/data/transformed"
-  
-# Performance Tuning
-performance:
-  shuffle_partitions: 200
-  max_records_per_file: 100000
-  file_size_mb: 128
-  
-# Data Quality
-quality:
-  enable_validation: true
-  duplicate_check: true
-  null_check: true
-  
-# Monitoring
-monitoring:
-  enable_metrics: true
-  log_retention_days: 90
-  alert_email: "admin@example.com"
-  
-# Error Handling
-error_handling:
-  max_retries: 3
-  retry_delay_seconds: 30
-  continue_on_error: false
-  error_path: "/data/errors"
+# Logging configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  handlers:
+    - type: console
+    - type: file
+      filename: logs/data_quality_{date}.log
 
-# Load Modes
-# Options: insert, update, upsert, overwrite
-default_load_mode: "upsert"
-
-# Partitioning Strategy
-partitioning:
-  enabled: true
-  columns:
-    - "category"
-  
-# Schema Management
-schema:
-  enforce_schema: true
-  merge_schema: true
-  validate_on_write: true
+# Output paths
+output:
+  quality_metrics_path: /data/quality/metrics
+  quality_reports_path: /data/quality/reports
+  failed_records_path: /data/quality/failed_records
+  format: parquet  # parquet, delta, or csv
