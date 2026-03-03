@@ -1,110 +1,77 @@
-# PySpark Data Initialization Configuration
-
-# Application settings
-app_name: "ETL Data Initialization"
-warehouse_dir: "/user/hive/warehouse"
-
-# Output settings
-output_format: "parquet"
-output_path: "/data/etl/initialized"
-
-# Save options
-save_to_tables: true
-save_to_files: false
-show_samples: true
-
-# Table names
-tables:
-  source_data: "etl_source_data"
-  config: "etl_config"
-  schedule: "etl_schedule"
-  target_data: "etl_target_data"
-  staging: "etl_staging"
-  run_log: "etl_run_log"
-  error_log: "etl_error_log"
-
-# Data generation settings
-default_rows: 100
-categories:
-  - "PREMIUM"
-  - "STANDARD"
-  - "BASIC"
-  - "VIP"
-  - "TRIAL"
-
-# Value ranges
-value_range:
-  min: 50
-  max: 1000
-
-# Category multipliers
-category_multipliers:
-  PREMIUM: 1.5
-  STANDARD: 1.2
-  BASIC: 1.0
-  VIP: 2.0
-  TRIAL: 0.8
-
-# Thresholds
-thresholds:
-  high_value: 750.00
-  medium_value: 300.00
-  low_value: 0.00
-
-# Performance settings
-batch_size: 1000
-max_retries: 3
-log_retention_days: 90
-
-# Notification settings
-alert_email: "admin@example.com"
-enable_notifications: true
-
-# Data quality settings
-enable_reconciliation: true
-enable_validation: true
-enable_quality_checks: true
-
-# Spark configuration
-spark_config:
-  spark.sql.shuffle.partitions: 200
-  spark.sql.adaptive.enabled: true
-  spark.sql.adaptive.coalescePartitions.enabled: true
-  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
-  spark.sql.sources.partitionOverwriteMode: "dynamic"
-
-# Logging
-log_level: "INFO"
-log_format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-# Schedule frequencies
-schedule_frequencies:
-  - "DAILY"
-  - "HOURLY"
-  - "WEEKLY"
-  - "MONTHLY"
-  - "CONTINUOUS"
-
-# ETL types
-etl_types:
-  - "FULL"
-  - "INCREMENTAL"
-  - "RECONCILIATION"
-  - "ARCHIVE"
-  - "STREAMING"
-
-# Source systems
-source_systems:
-  - "SAP_ERP"
-  - "SALESFORCE"
-  - "ORACLE_DB"
-  - "MYSQL"
-  - "API"
-
-# Status values
-status_values:
-  - "ACTIVE"
-  - "INACTIVE"
-  - "PENDING"
-  - "ARCHIVED"
-  - "DELETED"
+# ETL Configuration
+spark:
+  app_name: "ETL_Data_Extractor"
+  master: "local[*]"
+  log_level: "WARN"
+  
+delta_lake:
+  enabled: true
+  catalog_name: "spark_catalog"
+  warehouse_path: "/opt/spark/warehouse"
+  checkpoint_location: "/opt/spark/checkpoints"
+  
+source:
+  type: "database"  # database, staging, incremental
+  database:
+    url: "jdbc:postgresql://localhost:5432/etl_db"
+    driver: "org.postgresql.Driver"
+    table: "etl_source_data"
+    user: "etl_user"
+    password: "etl_password"
+  staging:
+    path: "/data/staging"
+    format: "parquet"
+  delta:
+    path: "/data/delta/source"
+    
+extraction:
+  default_max_records: 1000
+  batch_size: 1000
+  filter_column: "status"
+  timestamp_column: "changed_at"
+  incremental:
+    watermark_delay: "10 minutes"
+    
+target:
+  type: "database"  # database, delta
+  database:
+    url: "jdbc:postgresql://localhost:5432/etl_db"
+    driver: "org.postgresql.Driver"
+    table: "etl_target_data"
+    user: "etl_user"
+    password: "etl_password"
+  delta:
+    path: "/data/delta/target"
+    partition_columns: ["category", "status"]
+    optimize_interval: "daily"
+    
+transformation:
+  premium_multiplier: 1.5
+  high_value_threshold: 750
+  medium_value_threshold: 300
+  priority_override_threshold: 1000
+  
+quality:
+  enable_checks: true
+  fail_on_error: false
+  checks:
+    - name: "completeness"
+      enabled: true
+    - name: "uniqueness"
+      enabled: true
+    - name: "validity"
+      enabled: true
+    - name: "consistency"
+      enabled: true
+      
+monitoring:
+  enable_metrics: true
+  dashboard_days: 7
+  alert_email: "admin@example.com"
+  health_check_interval: 300
+  
+logging:
+  level: "INFO"
+  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
+  file: "/logs/etl_execution.log"
+  retention_days: 90
