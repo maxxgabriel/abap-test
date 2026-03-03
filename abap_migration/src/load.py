@@ -1,15 +1,18 @@
 """
-ETL Data Loading Module
-Loads transformed data to target systems
+ETL Load Module
+Handles data loading to target systems with reconciliation
 """
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import col, lit
 from typing import Dict, Any, List
 import logging
+from src.logger import ETLLogger
+from src.config import Config
 
 
 class LoadResult:
-    """Result of load operation"""
+    """Container for load operation results"""
+    
     def __init__(self):
         self.success_count = 0
         self.error_count = 0
@@ -18,167 +21,281 @@ class LoadResult:
 
 
 class ETLLoader:
-    """Handles data loading to target systems"""
+    """Load transformed data to target systems"""
     
-    def __init__(self, spark: SparkSession, config: Dict[str, Any], run_id: str):
+    def __init__(self, spark: SparkSession, config: Config, run_id: str):
         """
         Initialize loader
         
         Args:
             spark: SparkSession instance
-            config: Configuration dictionary
+            config: Configuration object
             run_id: Unique run identifier
         """
         self.spark = spark
         self.config = config
         self.run_id = run_id
-        self.logger = logging.getLogger(__name__)
-        self.target_type = config.get('loading', {}).get('target_type', 'DATABASE')
-        self.batch_size = config.get('loading', {}).get('batch_size', 1000)
+        self.logger = ETLLogger.get_instance()
+        self.target_type = config.get("loading.target_type", "database")
+        self.batch_size = config.get("loading.batch_size", 1000)
         
-    def load_data(self, df: DataFrame, mode: str = 'INSERT') -> LoadResult:
+    def load_data(
+        self,
+        transformed_df: DataFrame,
+        mode: str = "upsert"
+    ) -> LoadResult:
         """
-        Load data to target
+        Load transformed data to target
         
         Args:
-            df: DataFrame to load
-            mode: Load mode (INSERT, UPDATE, UPSERT)
+            transformed_df: Transformed data DataFrame
+            mode: Load mode ('insert', 'update', 'upsert', 'overwrite')
             
         Returns:
-            LoadResult with statistics
+            LoadResult with operation statistics
         """
-        result = LoadResult()
-        result.total_count = df.count()
+        self.logger.log_info(
+            component="LOADER",
+            message=f"Starting load - Mode: {mode}, Batch size: {self.batch_size}"
+        )
         
-        self.logger.info(f"Starting load - Mode: {mode}, Batch size: {self.batch_size}")
+        result = LoadResult()
+        result.total_count = transformed_df.count()
         
         try:
-            if self.target_type == 'DATABASE':
-                success = self.load_to_database(df, mode)
+            # Route to appropriate loader
+            if self.target_type.upper() == "DATABASE":
+                success = self._load_to_database(transformed_df, mode)
+            elif self.target_type.upper() == "PARQUET":
+                success = self._load_to_parquet(transformed_df, mode)
+            elif self.target_type.upper() == "DELTA":
+                success = self._load_to_delta(transformed_df, mode)
             else:
-                success = self.load_to_database(df, mode)
+                self.logger.log_warning(
+                    component="LOADER",
+                    message=f"Unknown target type {self.target_type}, defaulting to DATABASE"
+                )
+                success = self._load_to_database(transformed_df, mode)
             
             if success:
                 result.success_count = result.total_count
-                self.logger.info(f"Load complete - Success: {result.success_count}")
+                result.error_count = 0
+                
+                # Perform reconciliation if enabled
+                if self.config.get("loading.enable_reconciliation", True):
+                    reconciled = self._reconcile_data(transformed_df)
+                    if not reconciled:
+                        self.logger.log_warning(
+                            component="LOADER",
+                            message="Data reconciliation check failed"
+                        )
+                        result.errors.append("Reconciliation mismatch detected")
             else:
+                result.success_count = 0
                 result.error_count = result.total_count
                 result.errors.append("Load operation failed")
-                self.logger.error("Load operation failed")
             
-            # Reconcile data if enabled
-            if self.config.get('loading', {}).get('enable_reconciliation', True):
-                if not self.reconcile_data(df):
-                    self.logger.warning("Data reconciliation failed")
-                    result.errors.append("Reconciliation check failed")
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Load complete - Success: {result.success_count}, Errors: {result.error_count}"
+            )
+            
+            return result
             
         except Exception as e:
+            self.logger.log_error(
+                component="LOADER",
+                message="Load operation failed",
+                details=str(e)
+            )
             result.error_count = result.total_count
             result.errors.append(str(e))
-            self.logger.error(f"Load error: {str(e)}")
-        
-        return result
+            return result
     
-    def load_to_database(self, df: DataFrame, mode: str) -> bool:
+    def _load_to_database(self, df: DataFrame, mode: str) -> bool:
         """
-        Load data to database
+        Load data to database target
         
         Args:
             df: DataFrame to load
             mode: Load mode
             
         Returns:
-            Success flag
+            True if successful
         """
+        target_table = self.config.get("loading.target_table", "etl_target_data")
+        
         try:
-            jdbc_config = self.config['loading']['jdbc']
-            
-            # Convert mode to Spark write mode
-            spark_mode_map = {
-                'INSERT': 'append',
-                'UPDATE': 'overwrite',
-                'UPSERT': 'append'  # Will use merge logic
-            }
-            spark_mode = spark_mode_map.get(mode, 'append')
-            
-            # Prepare data for target format
-            df_target = df.select(
-                col("id"),
-                col("name"),
-                col("value"),
-                col("transformed_value"),
-                col("status"),
-                col("category"),
-                col("priority"),
-                col("etl_run_id"),
-                col("processed_at"),
-                col("processed_by")
-            )
+            # Map mode to JDBC mode
+            jdbc_mode = {
+                "insert": "append",
+                "update": "overwrite",
+                "upsert": "append",
+                "overwrite": "overwrite"
+            }.get(mode.lower(), "append")
             
             # Write to database
-            df_target.write \
+            df.write \
                 .format("jdbc") \
-                .option("url", jdbc_config['url']) \
-                .option("dbtable", jdbc_config['target_table']) \
-                .option("user", jdbc_config['user']) \
-                .option("password", jdbc_config['password']) \
-                .option("driver", jdbc_config['driver']) \
+                .option("url", self.config.get("database.jdbc_url")) \
+                .option("dbtable", target_table) \
+                .option("user", self.config.get("database.user")) \
+                .option("password", self.config.get("database.password")) \
+                .option("driver", self.config.get("database.driver")) \
                 .option("batchsize", self.batch_size) \
-                .mode(spark_mode) \
+                .mode(jdbc_mode) \
                 .save()
             
-            self.logger.info(f"Successfully loaded {df.count()} records to database")
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Successfully loaded {df.count()} records to {target_table}"
+            )
+            
             return True
             
         except Exception as e:
-            self.logger.error(f"Database load error: {str(e)}")
+            self.logger.log_error(
+                component="LOADER",
+                message=f"Database load failed for table {target_table}",
+                details=str(e)
+            )
             return False
     
-    def reconcile_data(self, df: DataFrame) -> bool:
+    def _load_to_parquet(self, df: DataFrame, mode: str) -> bool:
         """
-        Reconcile loaded data
+        Load data to Parquet files
         
         Args:
-            df: DataFrame that was loaded
+            df: DataFrame to load
+            mode: Load mode
+            
+        Returns:
+            True if successful
+        """
+        target_path = self.config.get("loading.target_path")
+        
+        try:
+            spark_mode = mode if mode in ["append", "overwrite"] else "append"
+            
+            df.write \
+                .mode(spark_mode) \
+                .partitionBy("category") \
+                .parquet(target_path)
+            
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Successfully loaded {df.count()} records to {target_path}"
+            )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="LOADER",
+                message="Parquet load failed",
+                details=str(e)
+            )
+            return False
+    
+    def _load_to_delta(self, df: DataFrame, mode: str) -> bool:
+        """
+        Load data to Delta Lake
+        
+        Args:
+            df: DataFrame to load
+            mode: Load mode
+            
+        Returns:
+            True if successful
+        """
+        target_path = self.config.get("loading.delta_path")
+        
+        try:
+            if mode.lower() == "upsert":
+                # Use Delta merge for upsert
+                from delta.tables import DeltaTable
+                
+                if DeltaTable.isDeltaTable(self.spark, target_path):
+                    delta_table = DeltaTable.forPath(self.spark, target_path)
+                    
+                    delta_table.alias("target").merge(
+                        df.alias("source"),
+                        "target.id = source.id"
+                    ).whenMatchedUpdateAll() \
+                     .whenNotMatchedInsertAll() \
+                     .execute()
+                else:
+                    df.write.format("delta").mode("overwrite").save(target_path)
+            else:
+                spark_mode = mode if mode in ["append", "overwrite"] else "append"
+                df.write.format("delta").mode(spark_mode).save(target_path)
+            
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Successfully loaded {df.count()} records to Delta at {target_path}"
+            )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="LOADER",
+                message="Delta load failed",
+                details=str(e)
+            )
+            return False
+    
+    def _reconcile_data(self, loaded_df: DataFrame) -> bool:
+        """
+        Reconcile loaded data with source
+        
+        Args:
+            loaded_df: DataFrame that was loaded
             
         Returns:
             True if reconciliation passes
         """
-        self.logger.info("Starting data reconciliation")
-        
         try:
-            jdbc_config = self.config['loading']['jdbc']
+            target_table = self.config.get("loading.target_table", "etl_target_data")
             
-            # Get record IDs from source
-            source_ids = df.select("id").distinct().count()
-            
-            # Query target to verify records exist
-            query = f"""(
-                SELECT COUNT(DISTINCT id) as record_count
-                FROM {jdbc_config['target_table']}
+            # Count records in target for this run
+            query = f"""
+                SELECT COUNT(*) as target_count
+                FROM {target_table}
                 WHERE etl_run_id = '{self.run_id}'
-            ) as reconcile_data"""
+            """
             
             target_df = self.spark.read \
                 .format("jdbc") \
-                .option("url", jdbc_config['url']) \
-                .option("dbtable", query) \
-                .option("user", jdbc_config['user']) \
-                .option("password", jdbc_config['password']) \
-                .option("driver", jdbc_config['driver']) \
+                .option("url", self.config.get("database.jdbc_url")) \
+                .option("dbtable", f"({query}) AS recon") \
+                .option("user", self.config.get("database.user")) \
+                .option("password", self.config.get("database.password")) \
+                .option("driver", self.config.get("database.driver")) \
                 .load()
             
-            target_count = target_df.collect()[0]['record_count']
+            target_count = target_df.first()["target_count"]
+            source_count = loaded_df.count()
             
-            if source_ids == target_count:
-                self.logger.info(f"Reconciliation passed: {source_ids} records matched")
-                return True
-            else:
-                self.logger.warning(
-                    f"Reconciliation failed: Source={source_ids}, Target={target_count}"
+            matches = target_count == source_count
+            
+            if matches:
+                self.logger.log_info(
+                    component="LOADER",
+                    message=f"Reconciliation passed: {source_count} records"
                 )
-                return False
-                
+            else:
+                self.logger.log_warning(
+                    component="LOADER",
+                    message=f"Reconciliation mismatch: Source={source_count}, Target={target_count}"
+                )
+            
+            return matches
+            
         except Exception as e:
-            self.logger.error(f"Reconciliation error: {str(e)}")
+            self.logger.log_warning(
+                component="LOADER",
+                message="Reconciliation check failed",
+                details=str(e)
+            )
             return False
