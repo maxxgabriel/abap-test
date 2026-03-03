@@ -1,48 +1,36 @@
 # PySpark Data Quality Framework Configuration
 
+# Spark Configuration
 spark:
-  app_name: "ETL_Data_Quality_Framework"
+  app_name: "ETL Data Quality Framework"
   master: "local[*]"
   config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.default.parallelism: 8
+    spark.driver.memory: "4g"
     spark.executor.memory: "4g"
-    spark.driver.memory: "2g"
-    spark.sql.sources.partitionOverwriteMode: "dynamic"
 
 # Data Quality Configuration
-quality:
-  # Required fields that must not be null or empty
+data_quality:
+  # Required fields that must not be null/empty
   required_fields:
     - id
     - name
     - value
+    - category
+    - status
   
-  # Fields that must be unique
-  unique_keys:
-    - id
+  # ID field for uniqueness checks
+  id_field: "id"
   
-  # Valid value ranges for numeric fields
-  value_ranges:
-    value:
-      min: 0
-      max: 999999
-    transformed_value:
-      min: 0
-      max: 999999
-    priority:
-      min: 1
-      max: 5
-  
-  # Business rules configuration
-  business_rules:
-    # Premium category minimum value threshold
-    premium_min_value: 500
-    
+  # Validity rules
+  validity_rules:
     # Allowed status values
     allowed_statuses:
       - ACTIVE
+      - INACTIVE
       - TRANSFORMED
       - HIGH_VALUE
       - MEDIUM_VALUE
@@ -50,73 +38,150 @@ quality:
       - NORMAL
       - INVALID
     
-    # Invalid name pattern (regex)
-    invalid_name_pattern: '[^A-Za-z0-9\s\-_.]'
+    # Allowed categories
+    allowed_categories:
+      - PREMIUM
+      - STANDARD
+      - BASIC
+      - VIP
+      - TRIAL
+      - UNCATEGORIZED
     
-    # Category-specific rules
-    category_rules:
-      PREMIUM:
-        min_value: 500
-        priority_range: [1, 3]
-      VIP:
-        min_value: 750
-        priority_range: [1, 2]
-      STANDARD:
-        min_value: 100
-        priority_range: [2, 4]
-      BASIC:
-        min_value: 50
-        priority_range: [3, 5]
+    # Value ranges
+    value_ranges:
+      min_value: 0
+      max_value: 100000
+    
+    # Priority range
+    priority_range:
+      min: 1
+      max: 5
   
-  # Anomaly detection thresholds
+  # Business rules validation
+  business_rules:
+    # Check premium category transformation
+    premium_multiplier_check: true
+    premium_multiplier: 1.5
+    
+    # Check priority-value consistency
+    priority_value_check: true
+    high_priority_threshold: 1000
+    
+    # Check ETL run ID presence
+    run_id_check: true
+    
+    # Status-value consistency
+    status_value_check: true
+    high_value_threshold: 750
+    medium_value_threshold: 300
+  
+  # Anomaly detection settings
   anomaly_detection:
-    outlier_iqr_multiplier: 1.5
-    skew_threshold: 0.5  # 50% of data in one category
-    enable_outlier_detection: true
-    enable_distribution_analysis: true
-
-# ETL Configuration
-etl:
-  source_type: "DATABASE"
-  target_type: "DATABASE"
-  batch_size: 1000
-  max_retries: 3
-  enable_reconciliation: true
+    enabled: true
+    outlier_std_dev_threshold: 3
+    max_category_percentage: 50
+    check_future_dates: true
   
-# Paths
-paths:
-  input_data: "data/input"
-  output_data: "data/output"
-  quality_reports: "data/quality_reports"
-  failed_records: "data/failed_records"
-  logs: "logs"
+  # Profiling settings
+  profiling:
+    enabled: true
+    calculate_statistics: true
+    include_distributions: true
+
+# Database Configuration
+database:
+  source:
+    jdbc_url: "jdbc:postgresql://localhost:5432/etl_source"
+    driver: "org.postgresql.Driver"
+    table: "source_data"
+    user: "etl_user"
+    password: "${DB_PASSWORD}"
+  
+  target:
+    jdbc_url: "jdbc:postgresql://localhost:5432/etl_target"
+    driver: "org.postgresql.Driver"
+    table: "target_data"
+    user: "etl_user"
+    password: "${DB_PASSWORD}"
 
 # Logging Configuration
 logging:
   level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/data_quality.log"
-  console_output: true
+  format: "[%(asctime)s] %(levelname)s - %(name)s - %(message)s"
+  file: "logs/data_quality_{run_id}.log"
+  console: true
 
-# Data Schema
-schema:
-  transformed_data:
-    id: string
-    name: string
-    value: decimal(15,2)
-    transformed_value: decimal(15,2)
-    status: string
-    category: string
-    priority: integer
-    etl_run_id: string
-    processed_at: timestamp
-    processed_by: string
-
-# Report Configuration
+# Reporting Configuration
 reporting:
-  generate_html_report: true
-  generate_json_report: true
-  save_failed_records: true
-  email_notifications: false
-  alert_on_failure: true
-  failure_threshold: 0.1  # Alert if >10% checks fail
+  output_path: "reports/quality_reports"
+  format: "json"
+  include_details: true
+  generate_summary: true
+
+# Schema Definitions
+schemas:
+  source_data:
+    fields:
+      - name: id
+        type: string
+        nullable: false
+      - name: name
+        type: string
+        nullable: false
+      - name: value
+        type: decimal(15,2)
+        nullable: false
+      - name: status
+        type: string
+        nullable: true
+      - name: category
+        type: string
+        nullable: true
+      - name: source_system
+        type: string
+        nullable: true
+      - name: created_at
+        type: timestamp
+        nullable: true
+      - name: created_by
+        type: string
+        nullable: true
+      - name: changed_at
+        type: timestamp
+        nullable: true
+      - name: changed_by
+        type: string
+        nullable: true
+  
+  transformed_data:
+    fields:
+      - name: id
+        type: string
+        nullable: false
+      - name: name
+        type: string
+        nullable: false
+      - name: value
+        type: decimal(15,2)
+        nullable: false
+      - name: transformed_value
+        type: decimal(15,2)
+        nullable: false
+      - name: status
+        type: string
+        nullable: false
+      - name: category
+        type: string
+        nullable: false
+      - name: priority
+        type: integer
+        nullable: false
+      - name: etl_run_id
+        type: string
+        nullable: false
+      - name: processed_at
+        type: timestamp
+        nullable: false
+      - name: processed_by
+        type: string
+        nullable: false
