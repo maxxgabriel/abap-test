@@ -1,0 +1,78 @@
+# ETL Configuration
+spark:
+  app_name: "ETL_Data_Extractor"
+  master: "local[*]"
+  log_level: "WARN"
+  configs:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+    spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+
+# Source configurations
+source:
+  database:
+    format: "jdbc"
+    url: "jdbc:postgresql://localhost:5432/etl_source"
+    driver: "org.postgresql.Driver"
+    table: "etl_source_data"
+    user: "${DB_USER}"
+    password: "${DB_PASSWORD}"
+    fetch_size: 10000
+    partition_column: "id"
+    num_partitions: 4
+    
+  staging:
+    path: "/data/staging"
+    format: "delta"
+    
+  incremental:
+    watermark_column: "changed_at"
+    checkpoint_location: "/data/checkpoints/incremental"
+
+# Target configurations
+target:
+  database:
+    format: "delta"
+    path: "/data/target/etl_target_data"
+    mode: "merge"
+    merge_keys: ["id"]
+    
+  reconciliation:
+    enabled: true
+    path: "/data/reconciliation"
+
+# Processing parameters
+processing:
+  default_max_records: 1000
+  batch_size: 1000
+  default_filter: null
+  enable_schema_validation: true
+  
+# Incremental load settings
+incremental:
+  enabled: true
+  last_run_table: "etl_run_log"
+  time_column: "changed_at"
+  time_format: "yyyy-MM-dd HH:mm:ss.SSSSSS"
+  
+# Delta Lake settings
+delta:
+  time_travel_enabled: true
+  retention_hours: 168  # 7 days
+  vacuum_enabled: true
+  optimize_after_write: true
+  
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "/logs/etl_extractor.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+  
+# Monitoring
+monitoring:
+  enabled: true
+  metrics_path: "/metrics/extractor"
+  dashboard_retention_days: 7
