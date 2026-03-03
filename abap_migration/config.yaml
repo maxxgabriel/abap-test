@@ -1,72 +1,166 @@
-# PySpark ETL Configuration
+# Data Quality Configuration
 
-# Spark Configuration
 spark:
-  app_name: "ETL_Data_Pipeline"
+  app_name: "DataQualityValidation"
   master: "local[*]"
   config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.sql.shuffle.partitions: 200
     spark.executor.memory: "4g"
     spark.driver.memory: "2g"
-    spark.sql.debug.maxToStringFields: "100"
 
-# Database Configuration
-database:
-  url: "jdbc:postgresql://localhost:5432/etl_db"
-  user: "etl_user"
-  password: "${DB_PASSWORD}"  # Use environment variable
-  driver: "org.postgresql.Driver"
+data_quality:
+  # Critical fields that must not be null
+  critical_fields:
+    - id
+    - name
+    - value
+    - category
+  
+  # Field used for uniqueness checks
+  id_field: "id"
+  
+  # Validation rules
+  validation_rules:
+    positive_fields:
+      - value
+      - transformed_value
+    priority_range:
+      min: 1
+      max: 5
+    required_fields:
+      - id
+      - name
+      - status
+      - category
+  
+  # Thresholds for validation
+  thresholds:
+    record_count:
+      min: 10
+      max: 1000000
+      expected: 100000
+      tolerance_percent: 10.0
+    
+    null_percentage:
+      max: 5.0  # Maximum 5% null values
+    
+    duplicate_percentage:
+      max: 1.0  # Maximum 1% duplicates
+    
+    error_rate:
+      max: 5.0  # Maximum 5% error rate
+    
+    completeness:
+      min: 95.0  # Minimum 95% completeness
+  
+  # Anomaly detection settings
+  anomaly_detection:
+    enabled: true
+    std_threshold: 3.0  # Number of standard deviations
+    outlier_percentage_threshold: 5.0
+  
+  # Profiling settings
+  profiling:
+    enabled: true
+    sample_size: 10000  # Sample size for profiling
+    generate_histograms: true
+    histogram_buckets: 20
+
+# Data source configuration
+data_sources:
   source_table: "etl_source_data"
   target_table: "etl_target_data"
-  run_log_table: "etl_run_log"
+  staging_table: "etl_staging"
+  
+  # Schema definitions
+  source_schema:
+    - name: "id"
+      type: "string"
+      nullable: false
+    - name: "name"
+      type: "string"
+      nullable: false
+    - name: "value"
+      type: "double"
+      nullable: false
+    - name: "status"
+      type: "string"
+      nullable: true
+    - name: "category"
+      type: "string"
+      nullable: false
+    - name: "source_system"
+      type: "string"
+      nullable: true
+    - name: "created_at"
+      type: "timestamp"
+      nullable: true
 
-# Staging Configuration
-staging:
-  path: "/data/staging"
-  format: "parquet"
-  compression: "snappy"
+  target_schema:
+    - name: "id"
+      type: "string"
+      nullable: false
+    - name: "name"
+      type: "string"
+      nullable: false
+    - name: "value"
+      type: "double"
+      nullable: false
+    - name: "transformed_value"
+      type: "double"
+      nullable: false
+    - name: "status"
+      type: "string"
+      nullable: false
+    - name: "category"
+      type: "string"
+      nullable: false
+    - name: "priority"
+      type: "integer"
+      nullable: false
+    - name: "etl_run_id"
+      type: "string"
+      nullable: false
+    - name: "processed_at"
+      type: "timestamp"
+      nullable: false
 
-# Loading Configuration
-loading:
-  batch_size: 1000
-  mode: "upsert"  # append, overwrite, upsert
-  enable_reconciliation: true
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/data_quality.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
 
-# Business Rules
-business_rules:
-  premium_multiplier: 1.5
-  standard_multiplier: 1.2
-  vip_multiplier: 2.0
-  high_value_threshold: 750
-  medium_value_threshold: 300
-  critical_value_threshold: 1000
+# Alert configuration
+alerts:
+  enabled: true
+  email:
+    smtp_server: "smtp.example.com"
+    smtp_port: 587
+    from_address: "etl-alerts@example.com"
+    to_addresses:
+      - "admin@example.com"
+      - "data-team@example.com"
+  
+  slack:
+    enabled: false
+    webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+  
+  # Conditions for sending alerts
+  conditions:
+    - check_type: "COMPLETENESS"
+      severity: "CRITICAL"
+    - check_type: "THRESHOLD"
+      severity: "CRITICAL"
+    - error_rate_threshold: 10.0
 
-# Processing Configuration
-processing:
-  user: "etl_system"
-  max_retries: 3
-  retry_delay_seconds: 60
-
-# Data Quality
-data_quality:
-  enable_validation: true
-  enable_profiling: true
-  enable_anomaly_detection: false
-  completeness_threshold: 0.95
-  uniqueness_threshold: 1.0
-
-# Monitoring
-monitoring:
-  enable_metrics: true
-  enable_alerts: true
-  alert_email: "admin@example.com"
-  log_level: "INFO"
-  retention_days: 90
-
-# Performance
-performance:
-  enable_caching: true
-  repartition_size: 200
-  broadcast_threshold: "10MB"
+# Reporting configuration
+reporting:
+  output_path: "reports/quality_reports"
+  format: "json"  # json, html, or csv
+  include_details: true
+  generate_charts: false
