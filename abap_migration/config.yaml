@@ -1,183 +1,188 @@
-# ETL Loading Configuration
+# PySpark ETL Shared Framework Configuration
 
-# Run configuration
-run_id: "RUN_${timestamp}"
-run_user: "etl_system"
-run_type: "scheduled"  # manual, scheduled, incremental
+# Application Settings
+app:
+  name: "ETL Shared Framework"
+  version: "1.0.0"
+  environment: "production"
 
-# Source configuration
-source:
-  type: "database"  # database, file, staging
-  jdbc_url: "jdbc:postgresql://localhost:5432/etl_source"
-  user: "etl_user"
-  password: "etl_password"
-  table: "etl_source_data"
-  
-  # For file-based sources
-  path: "/data/source"
-  format: "parquet"  # parquet, csv, json, delta
-  
-  # Incremental settings
-  incremental_column: "changed_at"
-  last_run_time: null
-
-# Transform configuration
-transform:
-  # Business rules
-  apply_business_rules: true
-  rules:
-    high_value_threshold: 750
-    medium_value_threshold: 300
-    premium_multiplier: 1.5
-  
-  # Validation
-  enable_validation: true
-  required_fields:
-    - id
-    - name
-    - value
-  
-  # Enrichment
-  enable_enrichment: true
-  enrichment_sources:
-    - type: "config_table"
-      table: "etl_config"
-
-# Target configuration
-target:
-  type: "database"  # database, file, data_warehouse
-  
-  # Database target
-  jdbc_url: "jdbc:postgresql://localhost:5432/etl_target"
-  user: "etl_user"
-  password: "etl_password"
-  table: "etl_target_data"
-  
-  # File target
-  path: "/data/target"
-  format: "delta"  # delta, parquet, csv
-  
-  # Schema
-  schema:
-    - name: "id"
-      type: "string"
-      nullable: false
-    - name: "name"
-      type: "string"
-      nullable: false
-    - name: "value"
-      type: "decimal(15,2)"
-      nullable: true
-    - name: "transformed_value"
-      type: "decimal(15,2)"
-      nullable: true
-    - name: "status"
-      type: "string"
-      nullable: true
-    - name: "category"
-      type: "string"
-      nullable: true
-    - name: "priority"
-      type: "integer"
-      nullable: true
-    - name: "etl_run_id"
-      type: "string"
-      nullable: false
-    - name: "processed_at"
-      type: "timestamp"
-      nullable: false
-    - name: "processed_by"
-      type: "string"
-      nullable: true
-    - name: "etl_loaded_at"
-      type: "timestamp"
-      nullable: false
-
-# Load configuration
-load:
-  # Mode: INSERT, UPDATE, UPSERT
-  mode: "UPSERT"
-  
-  # Batch settings
-  batch_size: 1000
-  enable_batching: true
-  num_partitions: 10
-  
-  # Key columns for UPSERT/UPDATE
-  key_columns:
-    - "id"
-  
-  # Required columns
-  required_columns:
-    - "id"
-    - "name"
-    - "etl_run_id"
-  
-  # Partitioning
-  enable_partitioning: true
-  partition_columns:
-    - "category"
-  
-  # Data quality
-  enable_reconciliation: true
-  enable_pre_validation: true
-  
-  # Error handling
-  max_retries: 3
-  continue_on_error: false
-  error_threshold_percent: 5
-
-# Performance settings
-performance:
-  spark_config:
-    spark.sql.shuffle.partitions: 200
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
+# Spark Configuration
+spark:
+  app_name: "ETL_Shared_Framework"
+  master: "local[*]"
+  config:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.shuffle.partitions: "200"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+    spark.sql.sources.partitionOverwriteMode: "dynamic"
+    spark.sql.legacy.timeParserPolicy: "LEGACY"
     spark.driver.memory: "4g"
     spark.executor.memory: "4g"
-    spark.executor.cores: 2
-  
-  # Caching
-  enable_caching: true
-  cache_intermediate_results: false
+    spark.executor.cores: "4"
+    spark.default.parallelism: "8"
 
-# Monitoring & Logging
-monitoring:
-  enable_metrics: true
-  enable_detailed_logging: true
-  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  
-  # Alerts
-  enable_alerts: true
-  alert_on_failure: true
-  alert_on_threshold: true
-  alert_email: "etl-admin@example.com"
-  
-  # Metrics
-  track_throughput: true
-  track_data_quality: true
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "[%(asctime)s] [%(levelname)s] [%(component)s] %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  console_enabled: true
+  file_enabled: true
+  log_dir: "logs"
+  max_file_size: 10485760  # 10MB
+  backup_count: 10
+  components:
+    - "EXTRACTOR"
+    - "TRANSFORMER"
+    - "LOADER"
+    - "ORCHESTRATOR"
+    - "DATA_QUALITY"
+    - "MONITOR"
 
-# Data quality
+# Database Configuration
+database:
+  source:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    database: "etl_source"
+    user: "${DB_SOURCE_USER}"
+    password: "${DB_SOURCE_PASSWORD}"
+    connection_pool:
+      min_size: 5
+      max_size: 20
+      timeout: 30
+    jdbc_url: "jdbc:postgresql://localhost:5432/etl_source"
+    driver: "org.postgresql.Driver"
+  
+  target:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    database: "etl_target"
+    user: "${DB_TARGET_USER}"
+    password: "${DB_TARGET_PASSWORD}"
+    connection_pool:
+      min_size: 5
+      max_size: 20
+      timeout: 30
+    jdbc_url: "jdbc:postgresql://localhost:5432/etl_target"
+    driver: "org.postgresql.Driver"
+  
+  staging:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    database: "etl_staging"
+    user: "${DB_STAGING_USER}"
+    password: "${DB_STAGING_PASSWORD}"
+    connection_pool:
+      min_size: 3
+      max_size: 10
+      timeout: 30
+    jdbc_url: "jdbc:postgresql://localhost:5432/etl_staging"
+    driver: "org.postgresql.Driver"
+
+# ETL Configuration
+etl:
+  batch_size: 1000
+  max_records: 0  # 0 = unlimited
+  max_retries: 3
+  retry_delay: 60  # seconds
+  enable_reconciliation: true
+  enable_data_quality: true
+  parallel_jobs: 4
+
+# Data Quality Configuration
 data_quality:
-  enable_quality_checks: true
+  enabled: true
   checks:
     - name: "completeness"
       enabled: true
+      threshold: 0.95
     - name: "uniqueness"
       enabled: true
+      threshold: 1.0
     - name: "validity"
       enabled: true
+      threshold: 0.98
     - name: "consistency"
       enabled: true
-  
-  # Quality thresholds
-  min_completeness_percent: 95
-  max_duplicate_percent: 1
-  max_invalid_percent: 5
+      threshold: 0.99
+  anomaly_detection:
+    enabled: true
+    std_dev_threshold: 3.0
 
-# Maintenance
-maintenance:
-  log_retention_days: 90
-  enable_cleanup: true
-  archive_old_runs: true
-  archive_after_days: 30
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  dashboard_refresh_interval: 300  # seconds
+  health_check_interval: 60  # seconds
+  alert_thresholds:
+    error_rate_warning: 20.0  # percentage
+    error_rate_critical: 50.0  # percentage
+    max_running_jobs: 5
+    max_duration: 3600  # seconds
+  retention:
+    logs_days: 90
+    metrics_days: 30
+    runs_days: 180
+
+# Notification Configuration
+notification:
+  enabled: true
+  email:
+    smtp_host: "${SMTP_HOST}"
+    smtp_port: 587
+    smtp_user: "${SMTP_USER}"
+    smtp_password: "${SMTP_PASSWORD}"
+    from_address: "etl-alerts@example.com"
+    to_addresses:
+      - "admin@example.com"
+      - "ops@example.com"
+  slack:
+    enabled: false
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channel: "#etl-alerts"
+
+# Business Rules Configuration
+business_rules:
+  category_multipliers:
+    PREMIUM: 1.5
+    STANDARD: 1.2
+    BASIC: 1.0
+    VIP: 2.0
+    TRIAL: 0.8
+  priority_thresholds:
+    high_value: 1000
+    medium_value: 300
+  status_mapping:
+    high_value: "HIGH_VALUE"
+    medium_value: "MEDIUM_VALUE"
+    low_value: "LOW_VALUE"
+    invalid: "INVALID"
+
+# Performance Configuration
+performance:
+  cache_enabled: true
+  broadcast_threshold: 10485760  # 10MB
+  adaptive_query_enabled: true
+  checkpoint_interval: 10
+  checkpoint_dir: "checkpoints"
+
+# Security Configuration
+security:
+  encryption_enabled: false
+  ssl_enabled: false
+  kerberos_enabled: false
+  audit_enabled: true
+
+# Paths Configuration
+paths:
+  base_dir: "/opt/etl"
+  data_dir: "/opt/etl/data"
+  logs_dir: "/opt/etl/logs"
+  config_dir: "/opt/etl/config"
+  checkpoints_dir: "/opt/etl/checkpoints"
+  temp_dir: "/opt/etl/temp"
