@@ -1,5 +1,5 @@
 """
-ETL Orchestrator - Main workflow coordination
+ETL Orchestrator - Coordinates the complete ETL pipeline
 """
 from pyspark.sql import SparkSession
 from datetime import datetime
@@ -10,146 +10,188 @@ import uuid
 from src.extract import ETLExtractor
 from src.transform import ETLTransformer
 from src.load import ETLLoader
-from src.data_quality import DataQualityChecker
+
+
+class ETLResult:
+    """Container for ETL execution results"""
+    
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+        self.status = "RUNNING"
+        self.start_time = datetime.now()
+        self.end_time = None
+        self.duration_seconds = 0
+        self.records_extracted = 0
+        self.records_transformed = 0
+        self.records_loaded = 0
+        self.records_failed = 0
+        self.error_count = 0
+        self.warning_count = 0
+        self.errors = []
 
 
 class ETLOrchestrator:
-    """Orchestrates the complete ETL workflow"""
+    """Orchestrates the complete ETL pipeline execution"""
     
-    def __init__(self, spark: SparkSession, config: dict, run_type: str = "MANUAL"):
+    def __init__(self, spark: SparkSession, config: Dict[str, Any]):
+        """
+        Initialize the orchestrator
+        
+        Args:
+            spark: SparkSession instance
+            config: Configuration dictionary
+        """
         self.spark = spark
         self.config = config
-        self.run_type = run_type
-        self.run_id = self._generate_run_id()
         self.logger = logging.getLogger(__name__)
-        
-        # Initialize components
-        self.extractor = ETLExtractor(spark, config, self.run_id)
-        self.transformer = ETLTransformer(spark, config, self.run_id)
-        self.loader = ETLLoader(spark, config, self.run_id)
-        self.quality_checker = DataQualityChecker(spark, config, self.run_id)
     
     def execute_etl(
         self,
-        source_type: str = "DATABASE",
-        target_type: str = "DATABASE",
+        source_type: str = "database",
+        target_type: str = "database",
         filter_condition: Optional[str] = None,
-        max_records: int = 0
-    ) -> Dict[str, Any]:
-        """Execute complete ETL workflow"""
+        max_records: int = 0,
+        load_mode: str = "upsert"
+    ) -> ETLResult:
+        """
+        Execute complete ETL pipeline
         
-        result = {
-            'run_id': self.run_id,
-            'status': 'RUNNING',
-            'start_time': datetime.now(),
-            'end_time': None,
-            'duration': 0,
-            'records_extracted': 0,
-            'records_transformed': 0,
-            'records_loaded': 0,
-            'records_failed': 0,
-            'error_count': 0,
-            'warning_count': 0
-        }
+        Args:
+            source_type: Type of data source
+            target_type: Type of target destination
+            filter_condition: Optional filter for extraction
+            max_records: Maximum records to process
+            load_mode: Mode for loading data
+            
+        Returns:
+            ETLResult object with execution statistics
+        """
+        run_id = self._generate_run_id()
+        result = ETLResult(run_id)
         
-        self.logger.info(f"ETL execution started - Run ID: {self.run_id}")
+        self.logger.info(f"=== ETL Execution Started - Run ID: {run_id} ===")
         
         try:
             # Step 1: Extract
-            self.logger.info("Step 1: Extracting data...")
-            source_df = self.extractor.extract_data(
+            self.logger.info("Step 1: Extracting data")
+            extractor = ETLExtractor(self.spark, self.config, run_id)
+            df_extracted = extractor.extract_data(
                 source_type=source_type,
                 filter_condition=filter_condition,
                 max_records=max_records
             )
-            result['records_extracted'] = source_df.count()
+            result.records_extracted = df_extracted.count()
             
-            if result['records_extracted'] == 0:
+            if result.records_extracted == 0:
                 self.logger.warning("No data extracted - stopping ETL process")
-                result['status'] = 'NO_DATA'
+                result.status = "NO_DATA"
+                result.end_time = datetime.now()
+                result.duration_seconds = (result.end_time - result.start_time).total_seconds()
                 return result
             
             # Step 2: Transform
-            self.logger.info("Step 2: Transforming data...")
-            transformed_df = self.transformer.transform_data(source_df)
-            result['records_transformed'] = transformed_df.count()
+            self.logger.info("Step 2: Transforming data")
+            transformer = ETLTransformer(self.spark, self.config, run_id)
+            df_transformed = transformer.transform_data(df_extracted)
+            result.records_transformed = df_transformed.count()
             
             # Step 3: Validate
-            self.logger.info("Step 3: Validating data...")
-            is_valid, validation_errors = self.transformer.validate_data(transformed_df)
+            self.logger.info("Step 3: Validating data")
+            is_valid, validation_errors = transformer.validate_data(df_transformed)
             
             if not is_valid:
                 self.logger.error(f"Validation failed with {len(validation_errors)} errors")
-                result['status'] = 'VALIDATION_FAILED'
-                result['error_count'] = len(validation_errors)
+                result.status = "VALIDATION_FAILED"
+                result.error_count = len(validation_errors)
+                result.errors = validation_errors
+                result.end_time = datetime.now()
+                result.duration_seconds = (result.end_time - result.start_time).total_seconds()
                 return result
             
-            # Step 4: Quality Checks
-            if self.config['data_quality'].get('enabled', True):
-                self.logger.info("Step 4: Performing quality checks...")
-                quality_results = self.quality_checker.perform_quality_checks(transformed_df)
-                
-                failed_checks = [qc for qc in quality_results if not qc['passed']]
-                if failed_checks:
-                    result['warning_count'] = len(failed_checks)
-                    self.logger.warning(f"{len(failed_checks)} quality checks failed")
-            
-            # Step 5: Load
-            self.logger.info("Step 5: Loading data...")
-            load_result = self.loader.load_data(
-                df=transformed_df,
-                mode=self.config['load']['mode']
+            # Step 4: Load
+            self.logger.info("Step 4: Loading data")
+            loader = ETLLoader(self.spark, self.config, run_id)
+            load_result = loader.load_data(
+                df=df_transformed,
+                mode=load_mode,
+                target_type=target_type
             )
             
-            result['records_loaded'] = load_result['success_count']
-            result['records_failed'] = load_result['error_count']
-            result['error_count'] = load_result['error_count']
+            result.records_loaded = load_result.success_count
+            result.records_failed = load_result.error_count
+            result.error_count = load_result.error_count
+            result.errors = load_result.errors
             
             # Determine final status
-            if load_result['error_count'] == 0:
-                result['status'] = 'SUCCESS'
-            elif load_result['success_count'] > 0:
-                result['status'] = 'PARTIAL_SUCCESS'
+            if load_result.error_count == 0:
+                result.status = "SUCCESS"
+            elif load_result.success_count > 0:
+                result.status = "PARTIAL_SUCCESS"
             else:
-                result['status'] = 'FAILED'
+                result.status = "FAILED"
             
-        except Exception as e:
-            self.logger.error(f"ETL execution failed: {str(e)}")
-            result['status'] = 'ERROR'
-            result['error_count'] += 1
-        
-        finally:
-            result['end_time'] = datetime.now()
-            result['duration'] = (result['end_time'] - result['start_time']).total_seconds()
-            
-            # Log run completion
+            # Log to run log table
             self._log_run_completion(result)
             
-            self.logger.info(
-                f"ETL execution completed - Status: {result['status']}, "
-                f"Duration: {result['duration']:.2f}s"
-            )
+        except Exception as e:
+            self.logger.error(f"ETL execution error: {str(e)}", exc_info=True)
+            result.status = "ERROR"
+            result.error_count += 1
+            result.errors.append(str(e))
+            
+        finally:
+            result.end_time = datetime.now()
+            result.duration_seconds = (result.end_time - result.start_time).total_seconds()
+            
+            self.logger.info(f"=== ETL Execution Completed - Status: {result.status} ===")
+            self.logger.info(f"Records - Extracted: {result.records_extracted}, "
+                           f"Transformed: {result.records_transformed}, "
+                           f"Loaded: {result.records_loaded}, "
+                           f"Failed: {result.records_failed}")
+            self.logger.info(f"Duration: {result.duration_seconds:.2f} seconds")
         
         return result
     
     def _generate_run_id(self) -> str:
         """Generate unique run ID"""
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4())[:8]
         return f"RUN_{timestamp}_{unique_id}"
     
-    def _log_run_completion(self, result: Dict[str, Any]):
-        """Log run completion to monitoring system"""
+    def _log_run_completion(self, result: ETLResult):
+        """Log run completion to database"""
         try:
-            log_path = self.config['monitoring']['run_log_path']
+            log_config = self.config['logging']['database']
             
-            log_df = self.spark.createDataFrame([result])
+            log_data = [(
+                result.run_id,
+                result.status,
+                result.start_time,
+                result.end_time,
+                result.duration_seconds,
+                result.records_extracted,
+                result.records_transformed,
+                result.records_loaded,
+                result.records_failed,
+                result.error_count
+            )]
             
-            log_df.write \
+            columns = ["run_id", "status", "start_time", "end_time", "duration",
+                      "records_extracted", "records_transformed", "records_loaded",
+                      "records_failed", "error_count"]
+            
+            df_log = self.spark.createDataFrame(log_data, columns)
+            
+            df_log.write \
+                .format("jdbc") \
+                .option("url", log_config['jdbc_url']) \
+                .option("dbtable", log_config['run_log_table']) \
+                .option("user", log_config.get('user', '')) \
+                .option("password", log_config.get('password', '')) \
                 .mode("append") \
-                .parquet(log_path)
+                .save()
             
-            self.logger.info(f"Run logged to {log_path}")
+            self.logger.info("Run log written successfully")
             
         except Exception as e:
-            self.logger.error(f"Failed to log run completion: {str(e)}")
+            self.logger.error(f"Failed to write run log: {str(e)}")
