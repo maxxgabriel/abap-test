@@ -1,6 +1,6 @@
 """
-Session Factory Module
-Database and Spark session management
+Database and Spark session factory for consistent resource handling.
+Manages connection pooling and session lifecycle.
 """
 
 from typing import Optional, Dict, Any
@@ -8,181 +8,245 @@ from contextlib import contextmanager
 from pyspark.sql import SparkSession
 
 from src.config_manager import config
-from src.logger import ETLLogger
+from src.logger import ComponentLogger
 
 
 class SessionFactory:
-    """Factory for creating and managing database and Spark sessions"""
+    """
+    Factory for creating and managing Spark sessions and database connections.
+    Implements singleton pattern for SparkSession.
+    """
     
     _spark_session: Optional[SparkSession] = None
-    _logger = ETLLogger.get_logger('SESSION_FACTORY')
     
     @classmethod
     def get_spark_session(cls, app_name: Optional[str] = None) -> SparkSession:
         """
-        Get or create Spark session with configured settings
+        Get or create SparkSession singleton.
         
         Args:
             app_name: Optional application name override
             
         Returns:
-            Configured SparkSession
+            SparkSession instance
         """
-        if cls._spark_session is not None:
-            return cls._spark_session
-        
-        cls._logger.info("Creating new Spark session")
-        
-        # Get Spark configuration
-        spark_config = config.get_spark_config()
-        db_config = config.get_database_config()
-        
-        if app_name:
-            spark_config['spark.app.name'] = app_name
-        
-        # Build Spark session
-        builder = SparkSession.builder
-        
-        for key, value in spark_config.items():
-            builder = builder.config(key, value)
-        
-        # Add JDBC driver
-        jdbc_driver = db_config.get('driver', 'org.postgresql.Driver')
-        builder = builder.config('spark.jars.packages',
-                                'org.postgresql:postgresql:42.5.0')
-        
-        cls._spark_session = builder.getOrCreate()
-        
-        # Set log level
-        cls._spark_session.sparkContext.setLogLevel(config.get_log_level())
-        
-        cls._logger.info(f"Spark session created: {cls._spark_session.version}")
+        if cls._spark_session is None:
+            cls._spark_session = cls._create_spark_session(app_name)
         
         return cls._spark_session
     
     @classmethod
+    def _create_spark_session(cls, app_name: Optional[str] = None) -> SparkSession:
+        """
+        Create new SparkSession with configuration.
+        
+        Args:
+            app_name: Optional application name
+            
+        Returns:
+            Configured SparkSession
+        """
+        logger = ComponentLogger("SessionFactory")
+        
+        spark_config = config.get_spark_config()
+        
+        if app_name is None:
+            app_name = spark_config.get('app_name', 'ETL_Framework')
+        
+        logger.info(f"Creating SparkSession: {app_name}")
+        
+        # Create session builder
+        builder = SparkSession.builder.appName(app_name)
+        
+        # Set master
+        master = spark_config.get('master', 'local[*]')
+        builder = builder.master(master)
+        
+        # Apply Spark configurations
+        spark_configs = spark_config.get('config', {})
+        for key, value in spark_configs.items():
+            builder = builder.config(key, value)
+        
+        # Add JDBC drivers
+        builder = builder.config(
+            "spark.jars.packages",
+            "org.postgresql:postgresql:42.5.0"
+        )
+        
+        session = builder.getOrCreate()
+        
+        # Set log level
+        log_level = config.get('logging.level', 'INFO')
+        session.sparkContext.setLogLevel(log_level)
+        
+        logger.info(f"SparkSession created successfully: {session.version}")
+        
+        return session
+    
+    @classmethod
     def stop_spark_session(cls) -> None:
-        """Stop the Spark session"""
+        """Stop active SparkSession."""
         if cls._spark_session is not None:
-            cls._logger.info("Stopping Spark session")
+            logger = ComponentLogger("SessionFactory")
+            logger.info("Stopping SparkSession")
             cls._spark_session.stop()
             cls._spark_session = None
     
     @classmethod
-    def get_jdbc_url(cls) -> str:
-        """Get JDBC connection URL"""
-        db_config = config.get_database_config()
-        return db_config['jdbc_url']
-    
-    @classmethod
-    def get_jdbc_properties(cls) -> Dict[str, str]:
-        """Get JDBC connection properties"""
-        db_config = config.get_database_config()
-        
-        return {
-            'user': db_config['user'],
-            'password': db_config['password'],
-            'driver': db_config['driver']
-        }
-    
-    @classmethod
     @contextmanager
-    def spark_context(cls, app_name: Optional[str] = None):
+    def spark_session_context(cls, app_name: Optional[str] = None):
         """
-        Context manager for Spark session
+        Context manager for SparkSession.
         
-        Usage:
-            with SessionFactory.spark_context() as spark:
-                df = spark.read.csv('data.csv')
+        Args:
+            app_name: Optional application name
+            
+        Yields:
+            SparkSession instance
         """
-        spark = cls.get_spark_session(app_name)
+        session = cls.get_spark_session(app_name)
         try:
-            yield spark
+            yield session
         finally:
-            # Don't stop session in context manager - allow reuse
+            # Note: We don't stop the session here as it's singleton
+            # Call stop_spark_session() explicitly when truly done
             pass
     
-    @classmethod
-    def create_database_connection(cls):
+    @staticmethod
+    def get_jdbc_connection_properties(db_type: str = 'source') -> Dict[str, str]:
         """
-        Create database connection using configured settings
+        Get JDBC connection properties for database.
         
+        Args:
+            db_type: 'source' or 'target'
+            
         Returns:
-            Database connection object
+            Dictionary of JDBC connection properties
         """
-        db_config = config.get_database_config()
+        db_config = config.get_database_config(db_type)
         
-        # Import appropriate driver
-        if 'postgresql' in db_config['jdbc_url']:
-            import psycopg2
-            conn = psycopg2.connect(
-                host=cls._extract_host(db_config['jdbc_url']),
-                database=cls._extract_database(db_config['jdbc_url']),
-                user=db_config['user'],
-                password=db_config['password']
-            )
-        else:
-            raise ValueError(f"Unsupported database: {db_config['jdbc_url']}")
-        
-        cls._logger.info("Database connection established")
-        return conn
-    
-    @staticmethod
-    def _extract_host(jdbc_url: str) -> str:
-        """Extract host from JDBC URL"""
-        # jdbc:postgresql://localhost:5432/etl_db -> localhost
-        parts = jdbc_url.split('//')[1].split(':')
-        return parts[0]
-    
-    @staticmethod
-    def _extract_database(jdbc_url: str) -> str:
-        """Extract database name from JDBC URL"""
-        # jdbc:postgresql://localhost:5432/etl_db -> etl_db
-        return jdbc_url.split('/')[-1]
-    
-    @classmethod
-    def get_connection_pool_config(cls) -> Dict[str, Any]:
-        """Get connection pool configuration"""
-        pool_config = config.get('database.connection_pool', {})
-        
-        return {
-            'min_connections': pool_config.get('min_connections', 2),
-            'max_connections': pool_config.get('max_connections', 10),
-            'connection_timeout': pool_config.get('connection_timeout', 30000)
+        properties = {
+            'user': db_config['user'],
+            'password': db_config.get('password', ''),
+            'driver': db_config['driver']
         }
-    
-    @classmethod
-    def test_connection(cls) -> bool:
-        """
-        Test database connection
         
+        # Add additional connection properties
+        conn_props = db_config.get('connection_properties', {})
+        properties.update({k: str(v) for k, v in conn_props.items()})
+        
+        return properties
+    
+    @staticmethod
+    def read_from_jdbc(
+        spark: SparkSession,
+        table: str,
+        db_type: str = 'source',
+        query: Optional[str] = None
+    ):
+        """
+        Read data from JDBC source.
+        
+        Args:
+            spark: SparkSession instance
+            table: Table name
+            db_type: 'source' or 'target'
+            query: Optional SQL query instead of table
+            
         Returns:
-            True if connection successful, False otherwise
+            DataFrame
+        """
+        db_config = config.get_database_config(db_type)
+        properties = SessionFactory.get_jdbc_connection_properties(db_type)
+        
+        if query:
+            # Use query as dbtable
+            dbtable = f"({query}) as subquery"
+        else:
+            dbtable = table
+        
+        return spark.read \
+            .format("jdbc") \
+            .option("url", db_config['jdbc_url']) \
+            .option("dbtable", dbtable) \
+            .options(**properties) \
+            .load()
+    
+    @staticmethod
+    def write_to_jdbc(
+        df,
+        table: str,
+        mode: str = "append",
+        db_type: str = 'target'
+    ) -> None:
+        """
+        Write DataFrame to JDBC target.
+        
+        Args:
+            df: DataFrame to write
+            table: Target table name
+            mode: Write mode (append, overwrite, etc.)
+            db_type: 'source' or 'target'
+        """
+        db_config = config.get_database_config(db_type)
+        properties = SessionFactory.get_jdbc_connection_properties(db_type)
+        
+        df.write \
+            .format("jdbc") \
+            .option("url", db_config['jdbc_url']) \
+            .option("dbtable", table) \
+            .options(**properties) \
+            .mode(mode) \
+            .save()
+
+
+class DatabaseConnectionManager:
+    """
+    Manager for database connection pooling and health checks.
+    """
+    
+    def __init__(self, db_type: str = 'source'):
+        """
+        Initialize connection manager.
+        
+        Args:
+            db_type: 'source' or 'target'
+        """
+        self.db_type = db_type
+        self.logger = ComponentLogger(f"DatabaseManager-{db_type}")
+    
+    def test_connection(self, spark: SparkSession) -> bool:
+        """
+        Test database connectivity.
+        
+        Args:
+            spark: SparkSession instance
+            
+        Returns:
+            True if connection successful
         """
         try:
-            spark = cls.get_spark_session()
-            jdbc_url = cls.get_jdbc_url()
-            properties = cls.get_jdbc_properties()
+            self.logger.info(f"Testing {self.db_type} database connection")
             
-            # Try to read from database
-            test_query = "(SELECT 1 as test) as test_table"
-            df = spark.read.jdbc(
-                url=jdbc_url,
-                table=test_query,
-                properties=properties
+            # Try simple query
+            test_df = SessionFactory.read_from_jdbc(
+                spark,
+                table="(SELECT 1 as test_col) as test",
+                db_type=self.db_type
             )
             
-            result = df.count()
+            count = test_df.count()
             
-            cls._logger.info("Database connection test successful")
-            return result == 1
-            
+            if count == 1:
+                self.logger.info(f"{self.db_type} database connection successful")
+                return True
+            else:
+                self.logger.error(f"{self.db_type} database connection test failed")
+                return False
+                
         except Exception as e:
-            cls._logger.error("Database connection test failed", exception=e)
+            self.logger.error(
+                f"{self.db_type} database connection failed",
+                exception=e
+            )
             return False
-
-
-# Convenience function for getting Spark session
-def get_spark() -> SparkSession:
-    """Get Spark session - convenience function"""
-    return SessionFactory.get_spark_session()
