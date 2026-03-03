@@ -1,5 +1,21 @@
-pyspark>=3.3.0
-pytest>=7.0.0
-pytest-cov>=3.0.0
-pyyaml>=6.0
-python-dateutil>=2.8.0
+# PySpark ETL Data Generator Requirements
+
+# Core dependencies
+pyspark>=3.3.0,<4.0.0
+PyYAML>=6.0
+python-dateutil>=2.8.2
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-spark>=0.6.0
+
+# Development dependencies
+black>=23.0.0
+flake8>=6.0.0
+pylint>=2.17.0
+mypy>=1.4.0
+
+# Utility dependencies
+pandas>=1.5.0,<2.0.0  # For DataFrame interoperability
+numpy>=1.24.0,<2.0.0
