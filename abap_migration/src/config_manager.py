@@ -1,97 +1,184 @@
 """
-Configuration Management Module
-Centralized configuration loading and management for the ETL framework.
+Configuration Manager for ETL Framework
+Provides centralized configuration management with validation and environment variable support.
 """
 
 import os
 import yaml
 from typing import Any, Dict, Optional
 from pathlib import Path
+import logging
+
+
+class ConfigurationError(Exception):
+    """Custom exception for configuration errors."""
+    pass
 
 
 class ConfigManager:
-    """Singleton configuration manager for ETL framework."""
+    """
+    Centralized configuration management for ETL framework.
+    
+    Supports:
+    - YAML configuration files
+    - Environment variable overrides
+    - Configuration validation
+    - Nested configuration access
+    """
     
     _instance: Optional['ConfigManager'] = None
     _config: Dict[str, Any] = {}
     
-    def __new__(cls):
+    def __new__(cls, config_path: Optional[str] = None):
+        """Singleton pattern implementation."""
         if cls._instance is None:
             cls._instance = super(ConfigManager, cls).__new__(cls)
+            cls._instance._initialized = False
         return cls._instance
     
-    def __init__(self):
-        if not self._config:
-            self.load_config()
-    
-    def load_config(self, config_path: Optional[str] = None) -> None:
+    def __init__(self, config_path: Optional[str] = None):
         """
-        Load configuration from YAML file.
+        Initialize configuration manager.
         
         Args:
-            config_path: Path to configuration file. If None, searches default locations.
+            config_path: Path to configuration file
         """
+        if self._initialized:
+            return
+            
         if config_path is None:
-            config_path = self._find_config_file()
+            config_path = os.getenv('ETL_CONFIG_PATH', 'config.yaml')
         
-        with open(config_path, 'r') as f:
-            self._config = yaml.safe_load(f)
-        
-        # Substitute environment variables
-        self._substitute_env_vars(self._config)
+        self._config_path = Path(config_path)
+        self._load_config()
+        self._apply_env_overrides()
+        self._validate_config()
+        self._initialized = True
     
-    def _find_config_file(self) -> str:
-        """Find configuration file in standard locations."""
-        search_paths = [
-            'config.yaml',
-            'config/config.yaml',
-            '../config.yaml',
-            os.path.join(os.path.dirname(__file__), '../config.yaml')
+    def _load_config(self) -> None:
+        """Load configuration from YAML file."""
+        try:
+            if not self._config_path.exists():
+                raise ConfigurationError(f"Configuration file not found: {self._config_path}")
+            
+            with open(self._config_path, 'r') as f:
+                self._config = yaml.safe_load(f)
+            
+            if not self._config:
+                raise ConfigurationError("Configuration file is empty")
+                
+        except yaml.YAMLError as e:
+            raise ConfigurationError(f"Error parsing configuration file: {e}")
+        except Exception as e:
+            raise ConfigurationError(f"Error loading configuration: {e}")
+    
+    def _apply_env_overrides(self) -> None:
+        """Apply environment variable overrides to configuration."""
+        # Database passwords from environment
+        if 'database' in self._config:
+            if 'source' in self._config['database']:
+                password_env = self._config['database']['source'].get('password_env')
+                if password_env:
+                    self._config['database']['source']['password'] = os.getenv(password_env, '')
+            
+            if 'target' in self._config['database']:
+                password_env = self._config['database']['target'].get('password_env')
+                if password_env:
+                    self._config['database']['target']['password'] = os.getenv(password_env, '')
+        
+        # SMTP credentials from environment
+        if 'monitoring' in self._config and 'alerts' in self._config['monitoring']:
+            alerts = self._config['monitoring']['alerts']
+            smtp_user_env = alerts.get('smtp_user_env')
+            smtp_pass_env = alerts.get('smtp_password_env')
+            
+            if smtp_user_env:
+                alerts['smtp_user'] = os.getenv(smtp_user_env, '')
+            if smtp_pass_env:
+                alerts['smtp_password'] = os.getenv(smtp_pass_env, '')
+        
+        # Override with ETL_* environment variables
+        etl_env_vars = {k: v for k, v in os.environ.items() if k.startswith('ETL_')}
+        for key, value in etl_env_vars.items():
+            config_key = key[4:].lower().replace('_', '.')
+            self._set_nested_value(config_key, value)
+    
+    def _validate_config(self) -> None:
+        """Validate required configuration parameters."""
+        required_keys = [
+            'spark',
+            'database',
+            'logging',
+            'etl'
         ]
         
-        for path in search_paths:
-            if os.path.exists(path):
-                return path
+        for key in required_keys:
+            if key not in self._config:
+                raise ConfigurationError(f"Missing required configuration key: {key}")
         
-        raise FileNotFoundError("Configuration file not found in standard locations")
+        # Validate database configuration
+        if 'source' not in self._config['database'] or 'target' not in self._config['database']:
+            raise ConfigurationError("Database source and target configuration required")
+        
+        # Validate critical paths
+        self._ensure_directories()
     
-    def _substitute_env_vars(self, config: Dict[str, Any]) -> None:
-        """Recursively substitute environment variables in config."""
-        for key, value in config.items():
-            if isinstance(value, dict):
-                self._substitute_env_vars(value)
-            elif isinstance(value, str) and value.startswith('${') and value.endswith('}'):
-                env_var = value[2:-1]
-                config[key] = os.getenv(env_var, value)
+    def _ensure_directories(self) -> None:
+        """Ensure required directories exist."""
+        if 'paths' in self._config:
+            for path_key, path_value in self._config['paths'].items():
+                path = Path(path_value)
+                path.mkdir(parents=True, exist_ok=True)
     
-    def get(self, key_path: str, default: Any = None) -> Any:
+    def get(self, key: str, default: Any = None) -> Any:
         """
-        Get configuration value using dot notation.
+        Get configuration value by key (supports dot notation).
         
         Args:
-            key_path: Dot-separated path to config value (e.g., 'spark.app_name')
+            key: Configuration key (e.g., 'spark.app_name' or 'database.source.url')
             default: Default value if key not found
             
         Returns:
             Configuration value
         """
-        keys = key_path.split('.')
+        keys = key.split('.')
         value = self._config
         
-        try:
-            for key in keys:
-                value = value[key]
-            return value
-        except (KeyError, TypeError):
-            return default
+        for k in keys:
+            if isinstance(value, dict) and k in value:
+                value = value[k]
+            else:
+                return default
+        
+        return value
     
-    def get_spark_config(self) -> Dict[str, str]:
-        """Get Spark configuration as dictionary."""
-        return self.get('spark.config', {})
+    def _set_nested_value(self, key: str, value: Any) -> None:
+        """Set nested configuration value using dot notation."""
+        keys = key.split('.')
+        config = self._config
+        
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            config = config[k]
+        
+        config[keys[-1]] = value
     
-    def get_database_config(self, db_name: str = 'default') -> Dict[str, Any]:
-        """Get database configuration."""
-        return self.get(f'database.{db_name}', {})
+    def get_spark_config(self) -> Dict[str, Any]:
+        """Get Spark configuration."""
+        return self.get('spark', {})
+    
+    def get_database_config(self, db_type: str = 'source') -> Dict[str, Any]:
+        """
+        Get database configuration.
+        
+        Args:
+            db_type: 'source' or 'target'
+            
+        Returns:
+            Database configuration dictionary
+        """
+        return self.get(f'database.{db_type}', {})
     
     def get_etl_config(self) -> Dict[str, Any]:
         """Get ETL configuration."""
@@ -101,50 +188,32 @@ class ConfigManager:
         """Get logging configuration."""
         return self.get('logging', {})
     
-    def get_data_quality_config(self) -> Dict[str, Any]:
-        """Get data quality configuration."""
-        return self.get('data_quality', {})
-    
     def get_monitoring_config(self) -> Dict[str, Any]:
         """Get monitoring configuration."""
         return self.get('monitoring', {})
     
-    def get_business_rules(self) -> Dict[str, Any]:
+    def get_data_quality_config(self) -> Dict[str, Any]:
+        """Get data quality configuration."""
+        return self.get('data_quality', {})
+    
+    def get_business_rules_config(self) -> Dict[str, Any]:
         """Get business rules configuration."""
         return self.get('business_rules', {})
     
-    def get_schema(self, schema_name: str) -> Dict[str, str]:
-        """Get schema definition."""
-        return self.get(f'schemas.{schema_name}', {})
-    
-    def set(self, key_path: str, value: Any) -> None:
-        """
-        Set configuration value using dot notation.
-        
-        Args:
-            key_path: Dot-separated path to config value
-            value: Value to set
-        """
-        keys = key_path.split('.')
-        config = self._config
-        
-        for key in keys[:-1]:
-            if key not in config:
-                config[key] = {}
-            config = config[key]
-        
-        config[keys[-1]] = value
-    
     def reload(self) -> None:
         """Reload configuration from file."""
-        self._config = {}
-        self.load_config()
+        self._load_config()
+        self._apply_env_overrides()
+        self._validate_config()
     
-    @property
-    def config(self) -> Dict[str, Any]:
-        """Get entire configuration dictionary."""
-        return self._config
+    def __getitem__(self, key: str) -> Any:
+        """Allow dictionary-style access."""
+        return self.get(key)
+    
+    def __contains__(self, key: str) -> bool:
+        """Check if key exists in configuration."""
+        return self.get(key) is not None
 
 
-# Global configuration instance
+# Singleton instance
 config = ConfigManager()
