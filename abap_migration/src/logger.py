@@ -1,63 +1,119 @@
 """
-ETL Logger
-Provides structured logging for ETL operations.
+ETL Logger Module
+Provides structured logging capabilities with different log levels
 """
-
-import logging
+from typing import Optional, List, Dict
 from datetime import datetime
-from typing import Optional
+import logging
+from enum import Enum
+
+
+class LogLevel(Enum):
+    """Log level enumeration"""
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    DEBUG = "DEBUG"
 
 
 class ETLLogger:
     """
-    Structured logger for ETL operations.
+    Singleton logger class for ETL operations
     """
-
-    def __init__(self, component: str, log_level: str = "INFO"):
-        """
-        Initialize ETL Logger.
-
-        Args:
-            component: Component name (EXTRACTOR, TRANSFORMER, LOADER, etc.)
-            log_level: Logging level
-        """
-        self.component = component
-        self.logger = logging.getLogger(f"ETL.{component}")
-        self.logger.setLevel(getattr(logging, log_level))
-
-        # Create console handler if not exists
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-
-    def log_info(self, message: str, details: Optional[str] = None):
-        """Log info message"""
-        full_message = f"{message}"
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(ETLLogger, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        self._logs: List[Dict] = []
+        self._setup_logger()
+        self._initialized = True
+    
+    def _setup_logger(self):
+        """Setup Python logging"""
+        self.logger = logging.getLogger("ETL")
+        self.logger.setLevel(logging.DEBUG)
+        
+        # Console handler
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        
+        # Formatter
+        formatter = logging.Formatter(
+            '[%(asctime)s] %(levelname)s: %(component)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
+        
+        self.logger.addHandler(handler)
+    
+    @classmethod
+    def get_instance(cls) -> 'ETLLogger':
+        """Get singleton instance"""
+        return cls()
+    
+    def log_info(self, component: str, message: str, details: Optional[str] = None):
+        """Log info level message"""
+        self._add_log_entry(LogLevel.INFO, component, message, details)
+    
+    def log_error(self, component: str, message: str, details: Optional[str] = None):
+        """Log error level message"""
+        self._add_log_entry(LogLevel.ERROR, component, message, details)
+    
+    def log_warning(self, component: str, message: str, details: Optional[str] = None):
+        """Log warning level message"""
+        self._add_log_entry(LogLevel.WARNING, component, message, details)
+    
+    def log_debug(self, component: str, message: str, details: Optional[str] = None):
+        """Log debug level message"""
+        self._add_log_entry(LogLevel.DEBUG, component, message, details)
+    
+    def _add_log_entry(
+        self, 
+        level: LogLevel, 
+        component: str, 
+        message: str, 
+        details: Optional[str] = None
+    ):
+        """Add log entry to internal log and Python logger"""
+        timestamp = datetime.now()
+        
+        log_entry = {
+            "timestamp": timestamp,
+            "level": level.value,
+            "component": component,
+            "message": message,
+            "details": details or ""
+        }
+        
+        self._logs.append(log_entry)
+        
+        # Log to Python logger
+        log_message = f"{component} - {message}"
         if details:
-            full_message += f" | Details: {details}"
-        self.logger.info(full_message)
-
-    def log_error(self, message: str, details: Optional[str] = None):
-        """Log error message"""
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
-        self.logger.error(full_message)
-
-    def log_warning(self, message: str, details: Optional[str] = None):
-        """Log warning message"""
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
-        self.logger.warning(full_message)
-
-    def log_debug(self, message: str, details: Optional[str] = None):
-        """Log debug message"""
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
-        self.logger.debug(full_message)
+            log_message += f" | Details: {details}"
+        
+        extra = {"component": component}
+        
+        if level == LogLevel.INFO:
+            self.logger.info(log_message, extra=extra)
+        elif level == LogLevel.WARNING:
+            self.logger.warning(log_message, extra=extra)
+        elif level == LogLevel.ERROR:
+            self.logger.error(log_message, extra=extra)
+        elif level == LogLevel.DEBUG:
+            self.logger.debug(log_message, extra=extra)
+    
+    def get_logs(self) -> List[Dict]:
+        """Get all logged entries"""
+        return self._logs.copy()
+    
+    def clear_logs(self):
+        """Clear internal log cache"""
+        self._logs.clear()
