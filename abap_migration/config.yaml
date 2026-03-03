@@ -1,77 +1,68 @@
-# ETL Configuration
+# Delta Lake Loader Configuration
+
+# Spark Configuration
 spark:
-  app_name: "ETL_Data_Extractor"
+  app_name: "ETL_Delta_Loader"
   master: "local[*]"
-  log_level: "WARN"
-  
-delta_lake:
-  enabled: true
-  catalog_name: "spark_catalog"
-  warehouse_path: "/opt/spark/warehouse"
-  checkpoint_location: "/opt/spark/checkpoints"
-  
-source:
-  type: "database"  # database, staging, incremental
-  database:
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    table: "etl_source_data"
-    user: "etl_user"
-    password: "etl_password"
-  staging:
-    path: "/data/staging"
-    format: "parquet"
-  delta:
-    path: "/data/delta/source"
-    
-extraction:
-  default_max_records: 1000
+  log_level: "INFO"
+  configs:
+    spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+    spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.databricks.delta.retentionDurationCheck.enabled: "false"
+    spark.databricks.delta.schema.autoMerge.enabled: "true"
+
+# Loader Configuration
+loader:
   batch_size: 1000
-  filter_column: "status"
-  timestamp_column: "changed_at"
-  incremental:
-    watermark_delay: "10 minutes"
-    
-target:
-  type: "database"  # database, delta
-  database:
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    table: "etl_target_data"
-    user: "etl_user"
-    password: "etl_password"
-  delta:
-    path: "/data/delta/target"
-    partition_columns: ["category", "status"]
-    optimize_interval: "daily"
-    
-transformation:
-  premium_multiplier: 1.5
-  high_value_threshold: 750
-  medium_value_threshold: 300
-  priority_override_threshold: 1000
+  target_path: "/data/delta/target_table"
+  enable_reconciliation: true
+  compact_on_complete: false
+  vacuum_retention_hours: 168  # 7 days
   
+# Source Configuration
+source:
+  format: "parquet"
+  path: "/data/transformed"
+  
+# Performance Tuning
+performance:
+  shuffle_partitions: 200
+  max_records_per_file: 100000
+  file_size_mb: 128
+  
+# Data Quality
 quality:
-  enable_checks: true
-  fail_on_error: false
-  checks:
-    - name: "completeness"
-      enabled: true
-    - name: "uniqueness"
-      enabled: true
-    - name: "validity"
-      enabled: true
-    - name: "consistency"
-      enabled: true
-      
+  enable_validation: true
+  duplicate_check: true
+  null_check: true
+  
+# Monitoring
 monitoring:
   enable_metrics: true
-  dashboard_days: 7
+  log_retention_days: 90
   alert_email: "admin@example.com"
-  health_check_interval: 300
   
-logging:
-  level: "INFO"
-  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
-  file: "/logs/etl_execution.log"
-  retention_days: 90
+# Error Handling
+error_handling:
+  max_retries: 3
+  retry_delay_seconds: 30
+  continue_on_error: false
+  error_path: "/data/errors"
+
+# Load Modes
+# Options: insert, update, upsert, overwrite
+default_load_mode: "upsert"
+
+# Partitioning Strategy
+partitioning:
+  enabled: true
+  columns:
+    - "category"
+  
+# Schema Management
+schema:
+  enforce_schema: true
+  merge_schema: true
+  validate_on_write: true
