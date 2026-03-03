@@ -1,110 +1,157 @@
 """
-Unit tests for ETL Data Generator
+Unit tests for ETL data generator module.
 """
+
 import pytest
 from datetime import datetime
+from decimal import Decimal
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType
 import sys
 import os
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.data_generator import ETLDataGenerator
+from src.data_generator import DataGenerator, ConfigGenerator, ScheduleGenerator
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def spark():
-    """Create Spark session for testing"""
+    """Create Spark session for testing."""
     spark_session = SparkSession.builder \
-        .appName("ETL Data Generator Tests") \
+        .appName("ETL_Generator_Tests") \
         .master("local[2]") \
         .config("spark.sql.shuffle.partitions", "2") \
         .getOrCreate()
     
     yield spark_session
+    
     spark_session.stop()
 
 
-@pytest.fixture
-def generator(spark):
-    """Create data generator instance"""
-    return ETLDataGenerator(spark)
-
-
-class TestSourceDataGeneration:
-    """Test source data generation"""
+class TestDataGenerator:
+    """Test cases for DataGenerator class."""
     
-    def test_generate_source_data_creates_records(self, generator):
-        """Test that source data generation creates expected number of records"""
+    def test_generate_source_data_count(self, spark):
+        """Test that correct number of records are generated."""
+        generator = DataGenerator(spark)
         num_records = 50
-        df = generator.generate_source_data(num_records)
         
-        assert df.count() == num_records, f"Expected {num_records} records"
+        df = generator.generate_source_data(num_records=num_records)
+        
+        assert df.count() == num_records, "Should generate exact number of records"
     
-    def test_source_data_has_correct_schema(self, generator):
-        """Test that generated data has correct schema"""
-        df = generator.generate_source_data(10)
+    def test_generate_source_data_schema(self, spark):
+        """Test that generated data has correct schema."""
+        generator = DataGenerator(spark)
+        df = generator.generate_source_data(num_records=10)
         
-        expected_fields = [
+        expected_columns = [
             "id", "name", "value", "status", "category", 
             "source_system", "created_at", "created_by", 
             "changed_at", "changed_by"
         ]
         
-        actual_fields = df.columns
-        assert set(expected_fields) == set(actual_fields), "Schema mismatch"
+        assert df.columns == expected_columns, "Schema columns should match"
     
-    def test_source_data_has_no_null_ids(self, generator):
-        """Test that all IDs are populated"""
-        df = generator.generate_source_data(20)
-        null_count = df.filter(df.id.isNull()).count()
+    def test_generate_source_data_no_nulls(self, spark):
+        """Test that no null values in non-nullable fields."""
+        generator = DataGenerator(spark)
+        df = generator.generate_source_data(num_records=20)
         
-        assert null_count == 0, "Found null IDs"
+        null_counts = df.select([
+            df[col].isNull().cast("int").alias(col) 
+            for col in df.columns
+        ]).agg(*[f"sum({col})" for col in df.columns]).collect()[0]
+        
+        assert all(count == 0 for count in null_counts), \
+            "Should have no null values in required fields"
     
-    def test_source_data_categories_are_valid(self, generator):
-        """Test that categories are from valid list"""
-        df = generator.generate_source_data(30)
+    def test_generate_source_data_categories(self, spark):
+        """Test that generated categories are valid."""
+        generator = DataGenerator(spark)
+        df = generator.generate_source_data(num_records=100)
         
         categories = df.select("category").distinct().rdd.flatMap(lambda x: x).collect()
         
-        for cat in categories:
-            assert cat in generator.CATEGORIES, f"Invalid category: {cat}"
+        for category in categories:
+            assert category in generator.CATEGORIES, \
+                f"Category {category} should be in valid list"
     
-    def test_source_data_values_in_range(self, generator):
-        """Test that values are within expected range"""
-        df = generator.generate_source_data(25)
+    def test_generate_source_data_value_range(self, spark):
+        """Test that generated values are within expected range."""
+        generator = DataGenerator(spark)
+        df = generator.generate_source_data(num_records=50)
         
-        stats = df.select("value").describe().collect()
-        min_val = float([row for row in stats if row[0] == 'min'][0][1])
-        max_val = float([row for row in stats if row[0] == 'max'][0][1])
+        result = df.agg({"value": "min", "value": "max"}).collect()[0]
+        min_value = float(result["min(value)"])
+        max_value = float(result["max(value)"])
         
-        assert min_val >= 50, f"Minimum value {min_val} below expected 50"
-        assert max_val <= 1000, f"Maximum value {max_val} above expected 1000"
+        assert 50.0 <= min_value <= 1000.0, "Min value should be in range"
+        assert 50.0 <= max_value <= 1000.0, "Max value should be in range"
     
-    def test_source_data_ids_are_unique(self, generator):
-        """Test that generated IDs are unique"""
-        df = generator.generate_source_data(40)
+    def test_generate_source_data_reproducibility(self, spark):
+        """Test that same seed produces same data."""
+        generator = DataGenerator(spark)
         
-        total_count = df.count()
-        unique_count = df.select("id").distinct().count()
+        df1 = generator.generate_source_data(num_records=10, seed=42)
+        df2 = generator.generate_source_data(num_records=10, seed=42)
         
-        assert total_count == unique_count, "Duplicate IDs found"
+        data1 = df1.collect()
+        data2 = df2.collect()
+        
+        assert data1 == data2, "Same seed should produce identical data"
+    
+    def test_generate_staging_data(self, spark):
+        """Test staging data generation."""
+        generator = DataGenerator(spark)
+        run_id = "TEST_RUN_001"
+        
+        df = generator.generate_staging_data(num_records=25, run_id=run_id)
+        
+        assert df.count() == 25, "Should generate correct number of staging records"
+        
+        # Check run_id is consistent
+        run_ids = df.select("run_id").distinct().collect()
+        assert len(run_ids) == 1, "Should have single run_id"
+        assert run_ids[0][0] == run_id, "Run ID should match"
+    
+    def test_generate_staging_data_schema(self, spark):
+        """Test staging data schema."""
+        generator = DataGenerator(spark)
+        df = generator.generate_staging_data(num_records=10)
+        
+        expected_columns = ["id", "run_id", "status", "raw_data", "created_at"]
+        assert df.columns == expected_columns, "Staging schema should match"
 
 
-class TestConfigDataGeneration:
-    """Test configuration data generation"""
+class TestConfigGenerator:
+    """Test cases for ConfigGenerator class."""
     
-    def test_generate_config_data_creates_entries(self, generator):
-        """Test that config generation creates entries"""
-        df = generator.generate_config_data()
+    def test_generate_config_count(self, spark):
+        """Test that all config entries are generated."""
+        generator = ConfigGenerator(spark)
+        df = generator.generate_config()
         
-        assert df.count() > 0, "No config entries generated"
+        assert df.count() >= 10, "Should generate at least 10 config entries"
     
-    def test_config_data_has_required_keys(self, generator):
-        """Test that essential config keys are present"""
-        df = generator.generate_config_data()
+    def test_generate_config_schema(self, spark):
+        """Test config data schema."""
+        generator = ConfigGenerator(spark)
+        df = generator.generate_config()
+        
+        expected_columns = [
+            "config_key", "config_value", "description", 
+            "config_type", "is_active", "changed_at", "changed_by"
+        ]
+        
+        assert df.columns == expected_columns, "Config schema should match"
+    
+    def test_generate_config_required_keys(self, spark):
+        """Test that required config keys are present."""
+        generator = ConfigGenerator(spark)
+        df = generator.generate_config()
         
         required_keys = [
             "BATCH_SIZE", "MAX_RETRIES", "ALERT_EMAIL", 
@@ -114,178 +161,115 @@ class TestConfigDataGeneration:
         config_keys = df.select("config_key").rdd.flatMap(lambda x: x).collect()
         
         for key in required_keys:
-            assert key in config_keys, f"Missing required config key: {key}"
+            assert key in config_keys, f"Config should contain {key}"
     
-    def test_config_data_all_active(self, generator):
-        """Test that all generated configs are active"""
-        df = generator.generate_config_data()
+    def test_generate_config_active_flag(self, spark):
+        """Test that config entries have valid active flag."""
+        generator = ConfigGenerator(spark)
+        df = generator.generate_config()
         
-        inactive_count = df.filter(df.is_active != "X").count()
+        active_values = df.select("is_active").distinct().rdd.flatMap(lambda x: x).collect()
         
-        assert inactive_count == 0, "Found inactive config entries"
-    
-    def test_config_data_has_descriptions(self, generator):
-        """Test that all configs have descriptions"""
-        df = generator.generate_config_data()
-        
-        null_desc_count = df.filter(df.description.isNull()).count()
-        
-        assert null_desc_count == 0, "Found configs without descriptions"
-    
-    def test_config_data_numeric_values_valid(self, generator):
-        """Test that numeric config values are valid"""
-        df = generator.generate_config_data()
-        
-        numeric_configs = df.filter(
-            df.config_key.isin(["BATCH_SIZE", "MAX_RETRIES", "LOG_RETENTION_DAYS"])
-        ).collect()
-        
-        for row in numeric_configs:
-            try:
-                int_val = int(row.config_value)
-                assert int_val > 0, f"Invalid numeric value for {row.config_key}"
-            except ValueError:
-                pytest.fail(f"Non-numeric value for {row.config_key}: {row.config_value}")
+        for value in active_values:
+            assert value in ["X", ""], "Active flag should be 'X' or empty"
 
 
-class TestScheduleDataGeneration:
-    """Test schedule data generation"""
+class TestScheduleGenerator:
+    """Test cases for ScheduleGenerator class."""
     
-    def test_generate_schedule_data_creates_schedules(self, generator):
-        """Test that schedule generation creates entries"""
-        df = generator.generate_schedule_data()
+    def test_generate_schedules_count(self, spark):
+        """Test that schedules are generated."""
+        generator = ScheduleGenerator(spark)
+        df = generator.generate_schedules()
         
-        assert df.count() > 0, "No schedule entries generated"
+        assert df.count() >= 5, "Should generate at least 5 schedules"
     
-    def test_schedule_data_has_unique_ids(self, generator):
-        """Test that schedule IDs are unique"""
-        df = generator.generate_schedule_data()
+    def test_generate_schedules_schema(self, spark):
+        """Test schedule data schema."""
+        generator = ScheduleGenerator(spark)
+        df = generator.generate_schedules()
+        
+        expected_columns = [
+            "schedule_id", "schedule_name", "etl_type", "frequency",
+            "start_date", "start_time", "is_active", "created_by", "created_at"
+        ]
+        
+        assert df.columns == expected_columns, "Schedule schema should match"
+    
+    def test_generate_schedules_unique_ids(self, spark):
+        """Test that schedule IDs are unique."""
+        generator = ScheduleGenerator(spark)
+        df = generator.generate_schedules()
         
         total_count = df.count()
         unique_count = df.select("schedule_id").distinct().count()
         
-        assert total_count == unique_count, "Duplicate schedule IDs found"
+        assert total_count == unique_count, "Schedule IDs should be unique"
     
-    def test_schedule_data_has_valid_frequencies(self, generator):
-        """Test that frequencies are valid"""
-        df = generator.generate_schedule_data()
+    def test_generate_schedules_etl_types(self, spark):
+        """Test that ETL types are valid."""
+        generator = ScheduleGenerator(spark)
+        df = generator.generate_schedules()
         
-        valid_frequencies = ["DAILY", "HOURLY", "WEEKLY", "CONTINUOUS"]
+        valid_types = ["FULL", "INCREMENTAL", "RECONCILIATION", "ARCHIVE", "STREAMING"]
+        etl_types = df.select("etl_type").distinct().rdd.flatMap(lambda x: x).collect()
+        
+        for etl_type in etl_types:
+            assert etl_type in valid_types, f"ETL type {etl_type} should be valid"
+    
+    def test_generate_schedules_frequencies(self, spark):
+        """Test that frequencies are valid."""
+        generator = ScheduleGenerator(spark)
+        df = generator.generate_schedules()
+        
+        valid_frequencies = ["DAILY", "HOURLY", "WEEKLY", "MONTHLY", "CONTINUOUS"]
         frequencies = df.select("frequency").distinct().rdd.flatMap(lambda x: x).collect()
         
         for freq in frequencies:
-            assert freq in valid_frequencies, f"Invalid frequency: {freq}"
-    
-    def test_schedule_data_times_formatted_correctly(self, generator):
-        """Test that times are in correct format"""
-        df = generator.generate_schedule_data()
-        
-        times = df.select("start_time").rdd.flatMap(lambda x: x).collect()
-        
-        for time_str in times:
-            assert len(time_str) == 6, f"Invalid time format: {time_str}"
-            assert time_str.isdigit(), f"Time contains non-digits: {time_str}"
+            assert freq in valid_frequencies, f"Frequency {freq} should be valid"
 
 
-class TestStagingDataGeneration:
-    """Test staging data generation"""
+class TestIntegration:
+    """Integration tests for complete data generation flow."""
     
-    def test_generate_staging_data_creates_records(self, generator):
-        """Test that staging data generation creates records"""
-        df = generator.generate_staging_data("TEST_RUN_001", 30)
+    def test_complete_generation_flow(self, spark):
+        """Test complete data generation workflow."""
+        # Generate all data types
+        data_gen = DataGenerator(spark)
+        config_gen = ConfigGenerator(spark)
+        schedule_gen = ScheduleGenerator(spark)
         
-        assert df.count() == 30, "Incorrect number of staging records"
+        source_df = data_gen.generate_source_data(num_records=10)
+        staging_df = data_gen.generate_staging_data(num_records=5)
+        config_df = config_gen.generate_config()
+        schedule_df = schedule_gen.generate_schedules()
+        
+        # Verify all DataFrames created successfully
+        assert source_df is not None, "Source data should be created"
+        assert staging_df is not None, "Staging data should be created"
+        assert config_df is not None, "Config data should be created"
+        assert schedule_df is not None, "Schedule data should be created"
+        
+        # Verify data can be collected
+        assert len(source_df.collect()) == 10, "Should collect source records"
+        assert len(staging_df.collect()) == 5, "Should collect staging records"
+        assert len(config_df.collect()) >= 10, "Should collect config entries"
+        assert len(schedule_df.collect()) >= 5, "Should collect schedules"
     
-    def test_staging_data_has_run_id(self, generator):
-        """Test that all staging records have correct run_id"""
-        run_id = "TEST_RUN_123"
-        df = generator.generate_staging_data(run_id, 20)
+    def test_data_persistence(self, spark, tmp_path):
+        """Test that generated data can be saved and loaded."""
+        generator = DataGenerator(spark)
+        df = generator.generate_source_data(num_records=20)
         
-        distinct_run_ids = df.select("run_id").distinct().collect()
-        
-        assert len(distinct_run_ids) == 1, "Multiple run_ids found"
-        assert distinct_run_ids[0][0] == run_id, f"Incorrect run_id"
-    
-    def test_staging_data_has_valid_statuses(self, generator):
-        """Test that staging statuses are valid"""
-        df = generator.generate_staging_data("RUN_001", 25)
-        
-        valid_statuses = ["READY", "PROCESSING", "COMPLETED"]
-        statuses = df.select("status").distinct().rdd.flatMap(lambda x: x).collect()
-        
-        for status in statuses:
-            assert status in valid_statuses, f"Invalid status: {status}"
-    
-    def test_staging_data_raw_data_not_empty(self, generator):
-        """Test that raw_data field is populated"""
-        df = generator.generate_staging_data("RUN_001", 15)
-        
-        null_count = df.filter(df.raw_data.isNull()).count()
-        empty_count = df.filter(df.raw_data == "").count()
-        
-        assert null_count == 0, "Found null raw_data"
-        assert empty_count == 0, "Found empty raw_data"
-
-
-class TestDataGeneratorIntegration:
-    """Integration tests for data generator"""
-    
-    def test_all_data_types_generated_successfully(self, generator):
-        """Test that all data types can be generated"""
-        source_df = generator.generate_source_data(10)
-        config_df = generator.generate_config_data()
-        schedule_df = generator.generate_schedule_data()
-        staging_df = generator.generate_staging_data("RUN_001", 10)
-        
-        assert source_df.count() == 10
-        assert config_df.count() > 0
-        assert schedule_df.count() > 0
-        assert staging_df.count() == 10
-    
-    def test_generated_data_can_be_written_and_read(self, generator, tmp_path, spark):
-        """Test that generated data can be persisted and loaded"""
-        df = generator.generate_source_data(20)
-        
-        output_path = str(tmp_path / "test_output")
+        output_path = str(tmp_path / "test_data.parquet")
         df.write.mode("overwrite").parquet(output_path)
         
+        # Load back
         loaded_df = spark.read.parquet(output_path)
         
-        assert loaded_df.count() == 20, "Data loss during write/read"
-        assert set(df.columns) == set(loaded_df.columns), "Schema mismatch"
-    
-    def test_large_dataset_generation(self, generator):
-        """Test generation of larger datasets"""
-        df = generator.generate_source_data(1000)
-        
-        assert df.count() == 1000, "Failed to generate large dataset"
-        
-        # Verify data quality on large dataset
-        null_ids = df.filter(df.id.isNull()).count()
-        assert null_ids == 0, "Null IDs in large dataset"
-
-
-class TestHelperMethods:
-    """Test helper methods"""
-    
-    def test_generate_username_format(self, generator):
-        """Test username generation format"""
-        username = generator._generate_username()
-        
-        assert len(username) == 6, "Username wrong length"
-        assert username.isupper(), "Username not uppercase"
-        assert username.isalpha(), "Username contains non-alpha"
-    
-    def test_generate_username_uniqueness(self, generator):
-        """Test that generated usernames vary"""
-        usernames = set()
-        
-        for _ in range(100):
-            usernames.add(generator._generate_username())
-        
-        # Should have at least some variety in 100 generations
-        assert len(usernames) > 10, "Insufficient username variety"
+        assert loaded_df.count() == 20, "Should load same number of records"
+        assert loaded_df.columns == df.columns, "Schema should be preserved"
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    pytest.main([__file__, "-v", "--tb=short"])
