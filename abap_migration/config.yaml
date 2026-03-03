@@ -1,66 +1,81 @@
-# PySpark Data Quality Framework Configuration
+# ETL Monitoring Configuration
 
 spark:
-  app_name: "ETL_Data_Quality_Framework"
+  app_name: "ETL_Monitoring"
   master: "local[*]"
   config:
-    spark.sql.shuffle.partitions: 200
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.shuffle.partitions: "200"
+    spark.driver.memory: "4g"
     spark.executor.memory: "4g"
-    spark.driver.memory: "2g"
 
-data_quality:
-  # Critical fields that must not be null/empty
-  critical_fields:
-    - id
-    - name
-    - value
-    - category
+monitoring:
+  dashboard:
+    default_days_back: 7
+    refresh_interval_seconds: 300
   
-  # Valid value ranges for numeric fields
-  value_ranges:
-    value:
-      min: 0
-      max: 1000000
-    transformed_value:
-      min: 0
-      max: 1500000
-    priority:
-      min: 1
-      max: 5
+  performance:
+    default_lookback_days: 30
+    throughput_calculation_enabled: true
   
-  # Valid categories
-  valid_categories:
-    - PREMIUM
-    - STANDARD
-    - BASIC
-    - VIP
-    - TRIAL
-    - UNCATEGORIZED
+  error_tracking:
+    default_days_back: 7
+    auto_resolve_days: 90
   
-  # Data freshness threshold (hours)
-  freshness_threshold_hours: 24
+  health_check:
+    max_running_jobs: 5
+    error_rate_warning_threshold: 20.0
+    error_rate_critical_threshold: 50.0
+    check_interval_minutes: 15
   
-  # Outlier detection (number of standard deviations)
-  outlier_std_devs: 3
+  sla:
+    default_threshold_minutes: 60
+    enable_compliance_tracking: true
+
+alerts:
+  enabled: true
+  channels:
+    - email
+    - slack
   
-  # Duplicate detection settings
-  duplicate_check_fields:
-    - id
+  email:
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    from_address: "etl-monitoring@example.com"
+    to_addresses:
+      - "admin@example.com"
   
-  # Quality score thresholds
-  quality_thresholds:
-    critical: 95  # Must pass 95% of checks
-    warning: 85   # Warning if below 85%
-    fail: 70      # Fail if below 70%
+  slack:
+    webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+    channel: "#etl-alerts"
+
+data_sources:
+  run_log:
+    format: "delta"
+    path: "/path/to/etl_run_log"
+    partition_by: ["date", "etl_type"]
+  
+  error_log:
+    format: "delta"
+    path: "/path/to/etl_error_log"
+    partition_by: ["date", "component"]
+
+reporting:
+  enable_hourly_trends: true
+  enable_category_stats: true
+  enable_sla_tracking: true
+  
+  export:
+    format: "parquet"
+    path: "/path/to/monitoring_reports"
+    retention_days: 180
 
 logging:
-  level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/data_quality.log"
-
-output:
-  quality_report_path: "output/quality_reports"
-  failed_records_path: "output/failed_records"
-  profile_path: "output/data_profiles"
+  level: "INFO"
+  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
+  file:
+    enabled: true
+    path: "/var/log/etl_monitoring.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
