@@ -1,88 +1,104 @@
-# ETL Monitoring Configuration
+# ETL Logger Configuration
 
-monitoring:
-  # Data paths
-  paths:
-    run_logs: "data/monitoring/run_logs"
-    error_logs: "data/monitoring/error_logs"
-    alerts: "data/monitoring/alerts"
-    metrics_output: "data/monitoring/reports"
+logger:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_level: INFO
   
-  # Dashboard settings
-  dashboard:
-    default_days_back: 7
-    refresh_interval_seconds: 60
-    max_running_jobs_threshold: 5
+  # Console output
+  console_output: true
   
-  # Health check thresholds
-  health_check:
-    critical_error_rate: 50.0  # percentage
-    warning_error_rate: 20.0   # percentage
-    max_running_jobs: 5
-    min_throughput: 100.0      # records per second
+  # File output
+  file_output: false
+  log_file_path: "logs/etl.log"
   
-  # Alert settings
-  alerts:
-    enabled: true
-    email_recipients:
-      - "admin@example.com"
-      - "etl-team@example.com"
-    severity_levels:
-      - "LOW"
-      - "MEDIUM"
-      - "HIGH"
-      - "CRITICAL"
-    alert_types:
-      - "PERFORMANCE"
-      - "ERROR_RATE"
-      - "DATA_QUALITY"
-      - "SYSTEM"
+  # In-memory storage
+  max_logs_in_memory: 10000
   
-  # Metrics aggregation
-  metrics:
-    time_buckets:
-      - "hour"
-      - "day"
-      - "week"
-    retention_days: 90
-    export_formats:
-      - "parquet"
-      - "csv"
-      - "json"
-  
-  # Performance monitoring
-  performance:
-    track_throughput: true
-    track_duration: true
-    track_memory_usage: true
-    percentiles:
-      - 50
-      - 90
-      - 95
-      - 99
-  
-  # Error tracking
-  error_tracking:
-    include_resolved: false
-    max_errors_displayed: 100
-    group_by_component: true
-    group_by_type: true
-
-# Spark configuration for monitoring
-spark:
-  app_name: "ETL_Monitoring"
-  master: "local[*]"
-  config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.session.timeZone: "UTC"
-    spark.driver.memory: "4g"
-    spark.executor.memory: "4g"
-
-# Logging configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/etl_monitoring.log"
-  max_bytes: 10485760  # 10MB
+  # Log rotation (if file output enabled)
+  max_file_size_mb: 100
   backup_count: 5
+  
+  # Timestamp format
+  timestamp_format: "%Y-%m-%d %H:%M:%S.%f"
+  
+  # Component logging levels (optional overrides)
+  component_levels:
+    EXTRACTOR: INFO
+    TRANSFORMER: INFO
+    LOADER: INFO
+    ORCHESTRATOR: INFO
+    DATA_QUALITY: WARNING
+    MONITOR: INFO
+
+# ETL Configuration
+etl:
+  # Default batch size
+  batch_size: 1000
+  
+  # Max records to process (0 = unlimited)
+  max_records: 0
+  
+  # Source and target types
+  default_source_type: "DATABASE"
+  default_target_type: "DATABASE"
+  
+  # Retry configuration
+  max_retries: 3
+  retry_delay_seconds: 5
+  
+  # Performance
+  parallel_processing: false
+  num_workers: 4
+
+# Data Quality Configuration
+data_quality:
+  enable_quality_checks: true
+  enable_profiling: true
+  enable_anomaly_detection: true
+  
+  # Quality check thresholds
+  max_null_percentage: 5.0
+  max_duplicate_percentage: 1.0
+  
+  # Validation rules
+  validation:
+    check_completeness: true
+    check_uniqueness: true
+    check_validity: true
+    check_consistency: true
+
+# Monitoring Configuration
+monitoring:
+  enable_monitoring: true
+  dashboard_retention_days: 90
+  
+  # Alert thresholds
+  alerts:
+    error_rate_threshold: 10.0
+    performance_threshold_seconds: 300
+    max_running_jobs: 5
+  
+  # Notification settings
+  notifications:
+    enable_email: false
+    email_recipients: []
+    enable_slack: false
+    slack_webhook_url: ""
+
+# Spark Configuration
+spark:
+  app_name: "ETL Logger Application"
+  master: "local[*]"
+  
+  # Memory settings
+  driver_memory: "2g"
+  executor_memory: "4g"
+  
+  # Shuffle partitions
+  sql_shuffle_partitions: 200
+  
+  # Additional configurations
+  config:
+    "spark.sql.adaptive.enabled": "true"
+    "spark.sql.adaptive.coalescePartitions.enabled": "true"
+    "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
