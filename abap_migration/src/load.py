@@ -1,22 +1,28 @@
 """
-Data Loading Module
-Handles loading transformed data to target systems with batch processing and error handling.
+PySpark ETL Loader Module
+Loads transformed data to target destinations with batch processing
 """
-
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, List
+from dataclasses import dataclass
 import logging
 
-logger = logging.getLogger(__name__)
+
+@dataclass
+class LoadResult:
+    """Result of load operation"""
+    success_count: int
+    error_count: int
+    total_count: int
+    errors: List[str]
 
 
-class DataLoader:
-    """Load transformed data to target destination."""
+class ETLLoader:
+    """Handles data loading to various targets"""
     
     def __init__(self, spark: SparkSession, config: Dict[str, Any], run_id: str):
         """
-        Initialize the DataLoader.
+        Initialize loader
         
         Args:
             spark: SparkSession instance
@@ -26,194 +32,138 @@ class DataLoader:
         self.spark = spark
         self.config = config
         self.run_id = run_id
-        self.target_config = config.get('target', {})
+        self.logger = logging.getLogger(__name__)
+        self.target_type = config.get('target_type', 'DATABASE')
+        self.batch_size = config.get('batch_size', 1000)
         
-    def load_data(
-        self,
-        df: DataFrame,
-        mode: str = None
-    ) -> Tuple[int, int, int]:
+    def load_data(self, df: DataFrame, mode: str = 'INSERT') -> LoadResult:
         """
-        Load data to target destination.
+        Main load method
         
         Args:
             df: DataFrame to load
-            mode: Load mode (insert, update, upsert, overwrite)
+            mode: Load mode (INSERT, UPDATE, UPSERT)
             
         Returns:
-            Tuple of (success_count, error_count, total_count)
+            LoadResult with statistics
         """
-        mode = mode or self.target_config.get('mode', 'upsert')
-        logger.info(f"Starting data load - Mode: {mode}, Run ID: {self.run_id}")
+        self.logger.info(f"Starting load - Mode: {mode}, Batch size: {self.batch_size}")
+        
+        total_count = df.count()
+        errors = []
         
         try:
-            total_count = df.count()
+            success = self._load_to_database(df, mode)
             
-            # Load based on mode
-            if mode == 'insert':
-                success_count = self._insert_data(df)
-            elif mode == 'update':
-                success_count = self._update_data(df)
-            elif mode == 'upsert':
-                success_count = self._upsert_data(df)
-            elif mode == 'overwrite':
-                success_count = self._overwrite_data(df)
+            if success:
+                success_count = total_count
+                error_count = 0
+                self.logger.info(f"Load complete - {success_count} records loaded successfully")
             else:
-                raise ValueError(f"Unknown load mode: {mode}")
+                success_count = 0
+                error_count = total_count
+                errors.append("Batch load failed")
+                self.logger.error("Load failed")
             
-            error_count = total_count - success_count
-            
-            logger.info(
-                f"Load complete - Success: {success_count}, "
-                f"Errors: {error_count}, Total: {total_count}"
-            )
-            
-            # Reconcile data if enabled
-            if self.config.get('quality', {}).get('enabled', True):
+            # Perform reconciliation if enabled
+            if self.config.get('enable_reconciliation', False):
                 self._reconcile_data(df)
             
-            return success_count, error_count, total_count
+            return LoadResult(
+                success_count=success_count,
+                error_count=error_count,
+                total_count=total_count,
+                errors=errors
+            )
             
         except Exception as e:
-            logger.error(f"Data load failed: {str(e)}")
-            raise
+            self.logger.error(f"Load error: {str(e)}")
+            return LoadResult(
+                success_count=0,
+                error_count=total_count,
+                total_count=total_count,
+                errors=[str(e)]
+            )
     
-    def _insert_data(self, df: DataFrame) -> int:
+    def _load_to_database(self, df: DataFrame, mode: str) -> bool:
         """
-        Insert new records into target.
+        Load data to database using JDBC
         
         Args:
-            df: DataFrame to insert
+            df: DataFrame to load
+            mode: Load mode
             
         Returns:
-            Number of records inserted
+            Success flag
         """
-        jdbc_config = self.target_config.get('jdbc', {})
-        batch_size = self.target_config.get('batch_size', 1000)
-        
-        # Write to JDBC target
-        df.write.format("jdbc") \
-            .option("url", jdbc_config.get('url')) \
-            .option("driver", jdbc_config.get('driver')) \
-            .option("dbtable", jdbc_config.get('table')) \
-            .option("user", jdbc_config.get('user')) \
-            .option("password", jdbc_config.get('password')) \
-            .option("batchsize", batch_size) \
-            .mode("append") \
-            .save()
-        
-        return df.count()
-    
-    def _update_data(self, df: DataFrame) -> int:
-        """
-        Update existing records in target.
-        
-        Args:
-            df: DataFrame with updates
+        try:
+            jdbc_config = self.config['jdbc']
+            target_table = self.config['target_table']
             
-        Returns:
-            Number of records updated
-        """
-        # For updates, we need to use JDBC with a custom query
-        # This is a simplified version - in production, use Delta Lake or similar
-        logger.warning("Update mode requires additional implementation for JDBC")
-        return self._upsert_data(df)
-    
-    def _upsert_data(self, df: DataFrame) -> int:
-        """
-        Insert or update records (upsert).
-        
-        Args:
-            df: DataFrame to upsert
+            # Map mode to Spark save mode
+            save_mode_map = {
+                'INSERT': 'append',
+                'UPDATE': 'overwrite',
+                'UPSERT': 'append'  # Will handle upsert with merge in post-processing
+            }
+            save_mode = save_mode_map.get(mode, 'append')
             
-        Returns:
-            Number of records processed
-        """
-        jdbc_config = self.target_config.get('jdbc', {})
-        batch_size = self.target_config.get('batch_size', 1000)
-        
-        # For PostgreSQL, we can use ON CONFLICT
-        # For other databases, this would need adjustment
-        properties = {
-            "user": jdbc_config.get('user'),
-            "password": jdbc_config.get('password'),
-            "driver": jdbc_config.get('driver'),
-            "batchsize": str(batch_size)
-        }
-        
-        # Write with overwrite mode on matching keys
-        df.write.jdbc(
-            url=jdbc_config.get('url'),
-            table=jdbc_config.get('table'),
-            mode="append",  # Use append with conflict resolution at DB level
-            properties=properties
-        )
-        
-        return df.count()
-    
-    def _overwrite_data(self, df: DataFrame) -> int:
-        """
-        Overwrite all data in target.
-        
-        Args:
-            df: DataFrame to write
+            # Write to database
+            df.write \
+                .format("jdbc") \
+                .option("url", jdbc_config['url']) \
+                .option("dbtable", target_table) \
+                .option("user", jdbc_config['user']) \
+                .option("password", jdbc_config['password']) \
+                .option("driver", jdbc_config['driver']) \
+                .option("batchsize", self.batch_size) \
+                .mode(save_mode) \
+                .save()
             
-        Returns:
-            Number of records written
-        """
-        jdbc_config = self.target_config.get('jdbc', {})
-        
-        df.write.format("jdbc") \
-            .option("url", jdbc_config.get('url')) \
-            .option("driver", jdbc_config.get('driver')) \
-            .option("dbtable", jdbc_config.get('table')) \
-            .option("user", jdbc_config.get('user')) \
-            .option("password", jdbc_config.get('password')) \
-            .mode("overwrite") \
-            .save()
-        
-        return df.count()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Database load error: {str(e)}")
+            return False
     
     def _reconcile_data(self, loaded_df: DataFrame) -> bool:
         """
-        Reconcile loaded data with target to ensure consistency.
+        Reconcile loaded data against source
         
         Args:
             loaded_df: DataFrame that was loaded
             
         Returns:
-            True if reconciliation passes
+            Match status
         """
-        logger.info("Starting data reconciliation")
+        self.logger.info("Starting data reconciliation")
         
         try:
-            jdbc_config = self.target_config.get('jdbc', {})
+            jdbc_config = self.config['jdbc']
+            target_table = self.config['target_table']
             
             # Read back from target
-            target_df = self.spark.read.format("jdbc").options(
-                url=jdbc_config.get('url'),
-                driver=jdbc_config.get('driver'),
-                dbtable=jdbc_config.get('table'),
-                user=jdbc_config.get('user'),
-                password=jdbc_config.get('password')
-            ).load()
+            target_df = self.spark.read \
+                .format("jdbc") \
+                .option("url", jdbc_config['url']) \
+                .option("dbtable", f"(SELECT * FROM {target_table} WHERE etl_run_id = '{self.run_id}') AS target") \
+                .option("user", jdbc_config['user']) \
+                .option("password", jdbc_config['password']) \
+                .option("driver", jdbc_config['driver']) \
+                .load()
             
-            # Filter to current run
-            target_df = target_df.filter(col("etl_run_id") == self.run_id)
-            
-            loaded_count = loaded_df.count()
+            source_count = loaded_df.count()
             target_count = target_df.count()
             
-            if loaded_count == target_count:
-                logger.info(f"Reconciliation passed: {loaded_count} records match")
+            if source_count == target_count:
+                self.logger.info(f"Reconciliation passed: {source_count} records match")
                 return True
             else:
-                logger.warning(
-                    f"Reconciliation mismatch: "
-                    f"Loaded {loaded_count}, Found {target_count}"
+                self.logger.warning(
+                    f"Reconciliation mismatch: Source={source_count}, Target={target_count}"
                 )
                 return False
                 
         except Exception as e:
-            logger.error(f"Reconciliation failed: {str(e)}")
+            self.logger.error(f"Reconciliation error: {str(e)}")
             return False
