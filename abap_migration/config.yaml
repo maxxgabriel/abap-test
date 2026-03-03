@@ -1,126 +1,88 @@
-# ETL Configuration File
-# Generated for ETL data initialization and testing
+# ETL Monitoring Configuration
 
-# Spark Configuration
+monitoring:
+  # Data paths
+  paths:
+    run_logs: "data/monitoring/run_logs"
+    error_logs: "data/monitoring/error_logs"
+    alerts: "data/monitoring/alerts"
+    metrics_output: "data/monitoring/reports"
+  
+  # Dashboard settings
+  dashboard:
+    default_days_back: 7
+    refresh_interval_seconds: 60
+    max_running_jobs_threshold: 5
+  
+  # Health check thresholds
+  health_check:
+    critical_error_rate: 50.0  # percentage
+    warning_error_rate: 20.0   # percentage
+    max_running_jobs: 5
+    min_throughput: 100.0      # records per second
+  
+  # Alert settings
+  alerts:
+    enabled: true
+    email_recipients:
+      - "admin@example.com"
+      - "etl-team@example.com"
+    severity_levels:
+      - "LOW"
+      - "MEDIUM"
+      - "HIGH"
+      - "CRITICAL"
+    alert_types:
+      - "PERFORMANCE"
+      - "ERROR_RATE"
+      - "DATA_QUALITY"
+      - "SYSTEM"
+  
+  # Metrics aggregation
+  metrics:
+    time_buckets:
+      - "hour"
+      - "day"
+      - "week"
+    retention_days: 90
+    export_formats:
+      - "parquet"
+      - "csv"
+      - "json"
+  
+  # Performance monitoring
+  performance:
+    track_throughput: true
+    track_duration: true
+    track_memory_usage: true
+    percentiles:
+      - 50
+      - 90
+      - 95
+      - 99
+  
+  # Error tracking
+  error_tracking:
+    include_resolved: false
+    max_errors_displayed: 100
+    group_by_component: true
+    group_by_type: true
+
+# Spark configuration for monitoring
 spark:
-  app_name: "ETL_Data_Generator"
+  app_name: "ETL_Monitoring"
   master: "local[*]"
   config:
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
-    spark.default.parallelism: "200"
+    spark.sql.session.timeZone: "UTC"
+    spark.driver.memory: "4g"
+    spark.executor.memory: "4g"
 
-# Data Generation Settings
-data_generation:
-  source_data:
-    num_records: 100
-    random_seed: 42
-    categories:
-      - PREMIUM
-      - STANDARD
-      - BASIC
-      - VIP
-      - TRIAL
-    statuses:
-      - ACTIVE
-      - INACTIVE
-      - PENDING
-      - ARCHIVED
-    value_range:
-      min: 50.0
-      max: 1000.0
-  
-  staging_data:
-    num_records: 50
-    default_run_id: "RUN001"
-    statuses:
-      - READY
-      - PROCESSING
-      - COMPLETED
-  
-  output_paths:
-    source_data: "data/source_data.parquet"
-    staging_data: "data/staging_data.parquet"
-    config_data: "data/config_data.parquet"
-    schedule_data: "data/schedule_data.parquet"
-
-# ETL Configuration Parameters
-etl_config:
-  batch_size: 1000
-  max_retries: 3
-  log_retention_days: 90
-  enable_reconciliation: true
-  enable_data_quality: true
-  quality_threshold: 95.0
-  
-  validation:
-    min_value_threshold: 50.0
-    max_value_threshold: 10000.0
-    required_fields:
-      - id
-      - name
-      - value
-      - category
-  
-  business_rules:
-    premium_multiplier: 1.5
-    standard_multiplier: 1.0
-    basic_multiplier: 0.8
-    priority_ranges:
-      high: [1, 2]
-      medium: [3]
-      low: [4, 5]
-
-# Schedule Definitions
-schedules:
-  - schedule_id: "SCHED001"
-    schedule_name: "Daily Full Load"
-    etl_type: "FULL"
-    frequency: "DAILY"
-    start_time: "02:00:00"
-    is_active: true
-  
-  - schedule_id: "SCHED002"
-    schedule_name: "Hourly Incremental"
-    etl_type: "INCREMENTAL"
-    frequency: "HOURLY"
-    start_time: "00:00:00"
-    is_active: true
-  
-  - schedule_id: "SCHED003"
-    schedule_name: "Weekly Reconciliation"
-    etl_type: "RECONCILIATION"
-    frequency: "WEEKLY"
-    start_time: "18:00:00"
-    is_active: false
-  
-  - schedule_id: "SCHED004"
-    schedule_name: "Monthly Archive"
-    etl_type: "ARCHIVE"
-    frequency: "MONTHLY"
-    start_time: "23:00:00"
-    is_active: true
-
-# Notification Settings
-notifications:
-  alert_email: "admin@example.com"
-  enable_alerts: true
-  alert_levels:
-    - CRITICAL
-    - ERROR
-    - WARNING
-
-# Logging Configuration
+# Logging configuration
 logging:
   level: "INFO"
-  format: "[%(asctime)s] %(levelname)s - %(name)s - %(message)s"
-  file: "logs/etl_generator.log"
-  console: true
-
-# Performance Settings
-performance:
-  enable_caching: true
-  enable_broadcast_joins: true
-  broadcast_threshold: 10485760  # 10MB
-  max_concurrent_jobs: 4
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/etl_monitoring.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
