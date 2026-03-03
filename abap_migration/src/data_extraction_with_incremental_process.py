@@ -1,320 +1,471 @@
+# PySpark Data Extraction with Incremental Processing
+
 ===FILE: src/extract.py===
 """
-PySpark Data Extraction Module with Incremental Processing
-Supports full and incremental loads using Delta Lake time-travel
+Data extraction module with incremental processing and Delta Lake time-travel support.
+Replaces ABAP extractor with PySpark DataFrame operations.
 """
 
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, max as spark_max, current_timestamp, lit
-from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    StructType, StructField, StringType, DecimalType, TimestampType
+)
 from datetime import datetime
 from typing import Optional, Dict, Any
 import logging
 
-from src.utils.logger import ETLLogger
-from src.utils.config import ConfigManager
+from src.logger import ETLLogger
+from src.config import Config
 
 
 class DataExtractor:
     """
-    Extracts data from various sources with support for incremental processing
+    Handles data extraction with support for:
+    - Full loads from database/files
+    - Incremental loads using timestamp filtering
+    - Delta Lake time-travel for change data capture
+    - Row limiting and filtering
     """
     
-    def __init__(self, spark: SparkSession, run_id: str, config: ConfigManager):
-        self.spark = spark
-        self.run_id = run_id
-        self.config = config
-        self.logger = ETLLogger.get_logger("EXTRACTOR")
-        
-    def get_source_schema(self) -> StructType:
-        """Define the source data schema"""
-        return StructType([
-            StructField("id", StringType(), False),
-            StructField("name", StringType(), True),
-            StructField("value", DecimalType(15, 2), True),
-            StructField("status", StringType(), True),
-            StructField("category", StringType(), True),
-            StructField("source_system", StringType(), True),
-            StructField("created_at", TimestampType(), True),
-            StructField("created_by", StringType(), True),
-            StructField("changed_at", TimestampType(), True),
-            StructField("changed_by", StringType(), True),
-        ])
+    # Define source schema matching ABAP ty_source_data
+    SOURCE_SCHEMA = StructType([
+        StructField("id", StringType(), False),
+        StructField("name", StringType(), True),
+        StructField("value", DecimalType(15, 2), True),
+        StructField("status", StringType(), True),
+        StructField("category", StringType(), True),
+        StructField("source_system", StringType(), True),
+        StructField("created_at", TimestampType(), True),
+        StructField("created_by", StringType(), True),
+        StructField("changed_at", TimestampType(), True),
+        StructField("changed_by", StringType(), True),
+    ])
     
-    def extract_data(
+    def __init__(
         self, 
-        source_type: str = "DATABASE",
+        spark: SparkSession,
+        config: Config,
+        run_id: str,
+        source_type: str = "DATABASE"
+    ):
+        """
+        Initialize the extractor.
+        
+        Args:
+            spark: Active SparkSession
+            config: Configuration object
+            run_id: Unique identifier for this ETL run
+            source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
+        """
+        self.spark = spark
+        self.config = config
+        self.run_id = run_id
+        self.source_type = source_type.upper()
+        self.logger = ETLLogger.get_instance()
+        
+    def extract_data(
+        self,
         filter_condition: Optional[str] = None,
         max_records: int = 0
     ) -> DataFrame:
         """
-        Main extraction method routing to appropriate extractor
+        Main extraction method - routes to appropriate extraction strategy.
         
         Args:
-            source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
-            filter_condition: Optional filter condition
-            max_records: Maximum records to extract (0 = no limit)
+            filter_condition: Optional SQL WHERE clause condition
+            max_records: Maximum number of records to extract (0 = unlimited)
             
         Returns:
-            DataFrame with extracted data
+            DataFrame containing extracted data
         """
-        self.logger.info(f"Starting extraction - Source: {source_type}, Run ID: {self.run_id}")
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Starting extraction - Source: {self.source_type}, Run ID: {self.run_id}"
+        )
         
         try:
-            if source_type == "DATABASE":
+            # Route to appropriate extraction method
+            if self.source_type == "DATABASE":
                 df = self._extract_from_database(filter_condition)
-            elif source_type == "STAGING":
+            elif self.source_type == "STAGING":
                 df = self._extract_from_staging()
-            elif source_type == "INCREMENTAL":
+            elif self.source_type == "INCREMENTAL":
                 df = self._extract_incremental()
             else:
-                self.logger.warning(f"Unknown source type: {source_type}, defaulting to DATABASE")
+                self.logger.log_warning(
+                    component="EXTRACTOR",
+                    message=f"Unknown source type '{self.source_type}', defaulting to DATABASE"
+                )
                 df = self._extract_from_database(filter_condition)
             
-            # Apply max records limit
+            # Apply max records limit if specified
             if max_records > 0:
                 df = df.limit(max_records)
             
             record_count = df.count()
-            self.logger.info(f"Extracted {record_count} records")
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Extracted {record_count} records"
+            )
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Extraction failed: {str(e)}", exc_info=True)
+            self.logger.log_error(
+                component="EXTRACTOR",
+                message="Extraction failed",
+                details=str(e)
+            )
             raise
     
-    def _extract_from_database(self, filter_condition: Optional[str] = None) -> DataFrame:
+    def _extract_from_database(
+        self, 
+        filter_condition: Optional[str] = None
+    ) -> DataFrame:
         """
-        Extract data from database source
+        Extract data from database source (JDBC or file-based).
         
         Args:
-            filter_condition: SQL WHERE clause condition
+            filter_condition: Optional WHERE clause filter
             
         Returns:
             DataFrame with source data
         """
         source_path = self.config.get("source.database.path")
-        source_format = self.config.get("source.database.format", "delta")
+        source_format = self.config.get("source.database.format", "parquet")
         
-        self.logger.info(f"Extracting from database: {source_path}")
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Extracting from database: {source_path}"
+        )
         
-        # Read from Delta Lake or other format
-        df = self.spark.read.format(source_format).load(source_path)
+        # Read from source
+        df = self.spark.read \
+            .format(source_format) \
+            .schema(self.SOURCE_SCHEMA) \
+            .load(source_path)
         
         # Apply filter if provided
         if filter_condition:
             df = df.filter(filter_condition)
-            self.logger.info(f"Applied filter: {filter_condition}")
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Applied filter: {filter_condition}"
+            )
         
-        # Apply default row limit from config if no specific limit
-        default_limit = self.config.get("extraction.default_row_limit", 1000)
-        if default_limit > 0:
+        # Apply default limit from config if no filter specified
+        if not filter_condition:
+            default_limit = self.config.get("source.database.default_limit", 1000)
             df = df.limit(default_limit)
         
         return df
     
     def _extract_from_staging(self) -> DataFrame:
         """
-        Extract data from staging area
+        Extract data from staging area filtered by run_id.
         
         Returns:
-            DataFrame with staged data
+            DataFrame with staged data ready for processing
         """
         staging_path = self.config.get("source.staging.path")
-        staging_format = self.config.get("source.staging.format", "parquet")
         
-        self.logger.info(f"Extracting from staging: {staging_path}")
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Extracting from staging for run_id: {self.run_id}"
+        )
         
-        df = (self.spark.read
-              .format(staging_format)
-              .load(staging_path)
-              .filter(col("run_id") == self.run_id)
-              .filter(col("status") == "READY"))
+        # Read staging data
+        df = self.spark.read \
+            .format("delta") \
+            .load(staging_path)
+        
+        # Filter by run_id and status
+        df = df.filter(
+            (F.col("run_id") == self.run_id) & 
+            (F.col("status") == "READY")
+        )
+        
+        # Parse and extract actual data fields
+        # In real scenario, might need to parse JSON/XML from raw_data column
+        df = df.select(
+            F.col("id"),
+            F.lit("STAGED").alias("status"),
+            F.col("created_at"),
+            # Add other field mappings as needed
+        )
         
         return df
     
     def _extract_incremental(self) -> DataFrame:
         """
-        Extract only changed records since last successful run
-        Uses Delta Lake time-travel for incremental processing
+        Extract only changed records since last successful run.
+        Uses Delta Lake time-travel to capture changes.
         
         Returns:
-            DataFrame with incremental data
-        """
-        source_path = self.config.get("source.database.path")
-        run_log_path = self.config.get("metadata.run_log_path")
-        
-        self.logger.info("Starting incremental extraction")
-        
-        try:
-            # Get last successful run timestamp from run log
-            last_run_time = self._get_last_successful_run_time(run_log_path)
-            
-            if last_run_time is None:
-                self.logger.warning("No previous successful run found, performing full load")
-                return self._extract_from_database()
-            
-            self.logger.info(f"Last successful run: {last_run_time}")
-            
-            # Use Delta Lake time-travel to get changes since last run
-            df = (self.spark.read
-                  .format("delta")
-                  .load(source_path)
-                  .filter(col("changed_at") > lit(last_run_time)))
-            
-            change_count = df.count()
-            self.logger.info(f"Found {change_count} changed records since {last_run_time}")
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Incremental extraction failed: {str(e)}")
-            self.logger.warning("Falling back to full extraction")
-            return self._extract_from_database()
-    
-    def _get_last_successful_run_time(self, run_log_path: str) -> Optional[datetime]:
-        """
-        Retrieve the end time of the last successful ETL run
-        
-        Args:
-            run_log_path: Path to run log Delta table
-            
-        Returns:
-            Timestamp of last successful run or None
-        """
-        try:
-            run_log_df = (self.spark.read
-                         .format("delta")
-                         .load(run_log_path)
-                         .filter(col("status") == "SUCCESS")
-                         .orderBy(col("end_time").desc())
-                         .limit(1))
-            
-            if run_log_df.count() > 0:
-                last_run = run_log_df.first()
-                return last_run["end_time"]
-            
-            return None
-            
-        except Exception as e:
-            self.logger.warning(f"Could not retrieve last run time: {str(e)}")
-            return None
-    
-    def extract_with_time_travel(self, version: Optional[int] = None, 
-                                 timestamp: Optional[str] = None) -> DataFrame:
-        """
-        Extract data using Delta Lake time-travel feature
-        
-        Args:
-            version: Specific version number to read
-            timestamp: Specific timestamp to read (ISO format)
-            
-        Returns:
-            DataFrame from specified version/timestamp
+            DataFrame with incremental changes
         """
         source_path = self.config.get("source.database.path")
         
-        reader = self.spark.read.format("delta")
+        # Get last successful run timestamp
+        last_run_time = self._get_last_successful_run_time()
         
-        if version is not None:
-            self.logger.info(f"Reading Delta table version {version}")
-            reader = reader.option("versionAsOf", version)
-        elif timestamp is not None:
-            self.logger.info(f"Reading Delta table as of timestamp {timestamp}")
-            reader = reader.option("timestampAsOf", timestamp)
+        if last_run_time:
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Extracting incremental changes since {last_run_time}"
+            )
+            
+            # Read Delta table with time-travel
+            df = self.spark.read \
+                .format("delta") \
+                .load(source_path)
+            
+            # Filter by changed_at timestamp
+            df = df.filter(F.col("changed_at") > F.lit(last_run_time))
+            
+        else:
+            self.logger.log_warning(
+                component="EXTRACTOR",
+                message="No previous successful run found, performing full extraction"
+            )
+            df = self._extract_from_database()
         
-        df = reader.load(source_path)
         return df
     
-    def get_extraction_metadata(self, df: DataFrame) -> Dict[str, Any]:
+    def _get_last_successful_run_time(self) -> Optional[datetime]:
         """
-        Collect metadata about extracted data
+        Query run log to find the timestamp of the last successful run.
+        
+        Returns:
+            Timestamp of last successful run, or None if not found
+        """
+        run_log_path = self.config.get("metadata.run_log_path")
+        
+        try:
+            run_log_df = self.spark.read \
+                .format("delta") \
+                .load(run_log_path)
+            
+            # Get the most recent successful run
+            last_run = run_log_df \
+                .filter(F.col("status") == "SUCCESS") \
+                .orderBy(F.col("end_time").desc()) \
+                .select("end_time") \
+                .first()
+            
+            if last_run:
+                return last_run["end_time"]
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.log_warning(
+                component="EXTRACTOR",
+                message=f"Could not retrieve last run time: {str(e)}"
+            )
+            return None
+    
+    def extract_with_cdc(
+        self,
+        from_version: Optional[int] = None,
+        from_timestamp: Optional[str] = None
+    ) -> DataFrame:
+        """
+        Extract changes using Delta Lake Change Data Feed (CDC).
+        Provides more granular change tracking than timestamp-based filtering.
+        
+        Args:
+            from_version: Delta table version to read changes from
+            from_timestamp: Timestamp string to read changes from
+            
+        Returns:
+            DataFrame with change data including _change_type column
+        """
+        source_path = self.config.get("source.database.path")
+        
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message="Extracting changes using Delta Lake CDC"
+        )
+        
+        # Enable change data feed reading
+        reader = self.spark.read \
+            .format("delta") \
+            .option("readChangeFeed", "true")
+        
+        # Specify version or timestamp
+        if from_version is not None:
+            reader = reader.option("startingVersion", from_version)
+        elif from_timestamp is not None:
+            reader = reader.option("startingTimestamp", from_timestamp)
+        
+        # Read changes
+        df = reader.load(source_path)
+        
+        # The DataFrame will include:
+        # - All data columns
+        # - _change_type: insert, update_preimage, update_postimage, delete
+        # - _commit_version: Delta version of the change
+        # - _commit_timestamp: Timestamp of the change
+        
+        return df
+    
+    def validate_schema(self, df: DataFrame) -> bool:
+        """
+        Validate that extracted data matches expected schema.
+        
+        Args:
+            df: DataFrame to validate
+            
+        Returns:
+            True if schema is valid, False otherwise
+        """
+        expected_fields = set(field.name for field in self.SOURCE_SCHEMA.fields)
+        actual_fields = set(df.schema.fieldNames())
+        
+        missing_fields = expected_fields - actual_fields
+        extra_fields = actual_fields - expected_fields
+        
+        if missing_fields:
+            self.logger.log_error(
+                component="EXTRACTOR",
+                message=f"Missing required fields: {missing_fields}"
+            )
+            return False
+        
+        if extra_fields:
+            self.logger.log_warning(
+                component="EXTRACTOR",
+                message=f"Extra fields found: {extra_fields}"
+            )
+        
+        return True
+    
+    def get_extraction_stats(self, df: DataFrame) -> Dict[str, Any]:
+        """
+        Gather statistics about extracted data.
         
         Args:
             df: Extracted DataFrame
             
         Returns:
-            Dictionary with metadata
+            Dictionary containing extraction statistics
         """
-        return {
-            "run_id": self.run_id,
-            "record_count": df.count(),
-            "extraction_time": datetime.now().isoformat(),
-            "columns": df.columns,
-            "partitions": df.rdd.getNumPartitions()
+        stats = {
+            "total_records": df.count(),
+            "distinct_ids": df.select("id").distinct().count(),
+            "null_values": {},
+            "categories": {}
         }
+        
+        # Count null values per column
+        for col in df.columns:
+            null_count = df.filter(F.col(col).isNull()).count()
+            if null_count > 0:
+                stats["null_values"][col] = null_count
+        
+        # Count records by category
+        if "category" in df.columns:
+            category_counts = df.groupBy("category").count().collect()
+            stats["categories"] = {
+                row["category"]: row["count"] 
+                for row in category_counts
+            }
+        
+        return stats
 
 
 ===FILE: src/transform.py===
 """
-PySpark Data Transformation Module
-Applies business rules, enrichment, and validation
+Data transformation module implementing business rules and data quality checks.
+Replaces ABAP transformer with PySpark DataFrame transformations.
 """
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import (
-    col, upper, trim, regexp_replace, when, current_timestamp,
-    lit, coalesce, round as spark_round
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    StructType, StructField, StringType, DecimalType, 
+    TimestampType, IntegerType
 )
-from pyspark.sql.types import StructType, StructField, StringType, DecimalType, IntegerType, TimestampType
 from typing import List, Tuple
 import logging
 
-from src.utils.logger import ETLLogger
-from src.utils.config import ConfigManager
+from src.logger import ETLLogger
+from src.config import Config
 
 
 class DataTransformer:
     """
-    Transforms extracted data according to business rules
+    Handles data transformation including:
+    - Business rule application
+    - Data enrichment
+    - Validation
+    - Derived field calculation
     """
     
-    def __init__(self, spark: SparkSession, run_id: str, config: ConfigManager):
-        self.spark = spark
-        self.run_id = run_id
-        self.config = config
-        self.logger = ETLLogger.get_logger("TRANSFORMER")
+    # Define transformed data schema matching ABAP ty_transformed_data
+    TRANSFORMED_SCHEMA = StructType([
+        StructField("id", StringType(), False),
+        StructField("name", StringType(), False),
+        StructField("value", DecimalType(15, 2), False),
+        StructField("transformed_value", DecimalType(15, 2), False),
+        StructField("status", StringType(), False),
+        StructField("category", StringType(), False),
+        StructField("priority", IntegerType(), False),
+        StructField("etl_run_id", StringType(), False),
+        StructField("processed_at", TimestampType(), False),
+        StructField("processed_by", StringType(), False),
+    ])
     
-    def get_target_schema(self) -> StructType:
-        """Define the transformed data schema"""
-        return StructType([
-            StructField("id", StringType(), False),
-            StructField("name", StringType(), False),
-            StructField("value", DecimalType(15, 2), True),
-            StructField("transformed_value", DecimalType(15, 2), True),
-            StructField("status", StringType(), True),
-            StructField("category", StringType(), True),
-            StructField("priority", IntegerType(), True),
-            StructField("etl_run_id", StringType(), False),
-            StructField("processed_at", TimestampType(), False),
-            StructField("processed_by", StringType(), False),
-        ])
+    def __init__(
+        self,
+        spark: SparkSession,
+        config: Config,
+        run_id: str
+    ):
+        """
+        Initialize the transformer.
+        
+        Args:
+            spark: Active SparkSession
+            config: Configuration object
+            run_id: Unique identifier for this ETL run
+        """
+        self.spark = spark
+        self.config = config
+        self.run_id = run_id
+        self.logger = ETLLogger.get_instance()
+        self.current_timestamp = F.current_timestamp()
+        self.current_user = self.config.get("runtime.user", "spark_etl")
     
     def transform_data(self, source_df: DataFrame) -> DataFrame:
         """
-        Main transformation pipeline
+        Main transformation method applying all transformation steps.
         
         Args:
-            source_df: Source DataFrame to transform
+            source_df: Source DataFrame from extraction
             
         Returns:
             Transformed DataFrame
         """
-        self.logger.info("Starting data transformation")
+        self.logger.log_info(
+            component="TRANSFORMER",
+            message="Starting transformation"
+        )
         
         try:
-            # Step 1: Apply basic transformations
-            df = self._apply_basic_transformations(source_df)
+            # Step 1: Basic field mapping and cleansing
+            df = self._map_and_cleanse(source_df)
             
             # Step 2: Calculate derived values
             df = self._calculate_derived_values(df)
             
-            # Step 3: Calculate priority
-            df = self._calculate_priority(df)
-            
-            # Step 4: Apply category-specific rules
+            # Step 3: Apply category-specific rules
             df = self._apply_category_rules(df)
+            
+            # Step 4: Calculate priority
+            df = self._calculate_priority(df)
             
             # Step 5: Apply business rules
             df = self._apply_business_rules(df)
@@ -322,139 +473,213 @@ class DataTransformer:
             # Step 6: Enrich data
             df = self._enrich_data(df)
             
-            # Step 7: Add metadata
+            # Step 7: Add metadata fields
             df = self._add_metadata(df)
             
             record_count = df.count()
-            self.logger.info(f"Transformed {record_count} records")
+            self.logger.log_info(
+                component="TRANSFORMER",
+                message=f"Transformed {record_count} records"
+            )
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Transformation failed: {str(e)}", exc_info=True)
+            self.logger.log_error(
+                component="TRANSFORMER",
+                message="Transformation failed",
+                details=str(e)
+            )
             raise
     
-    def _apply_basic_transformations(self, df: DataFrame) -> DataFrame:
-        """Apply basic data cleaning and normalization"""
-        self.logger.info("Applying basic transformations")
+    def _map_and_cleanse(self, df: DataFrame) -> DataFrame:
+        """
+        Map source fields to target schema and cleanse data.
         
-        df = (df
-              .withColumn("name", upper(trim(col("name"))))
-              .withColumn("name", regexp_replace(col("name"), r'\s+', ' '))
-              .withColumn("category", coalesce(col("category"), lit("UNCATEGORIZED")))
-              .withColumn("status", upper(trim(col("status")))))
-        
-        return df
+        Args:
+            df: Source DataFrame
+            
+        Returns:
+            Cleansed DataFrame with mapped fields
+        """
+        return df.select(
+            F.col("id"),
+            # Normalize name: trim, upper case, remove extra spaces
+            F.upper(F.trim(F.regexp_replace(F.col("name"), r'\s+', ' '))).alias("name"),
+            F.col("value"),
+            F.col("status"),
+            F.col("category")
+        )
     
     def _calculate_derived_values(self, df: DataFrame) -> DataFrame:
-        """Calculate transformed values based on category"""
-        self.logger.info("Calculating derived values")
+        """
+        Calculate transformed_value based on business logic.
         
+        Args:
+            df: DataFrame with base values
+            
+        Returns:
+            DataFrame with transformed_value column added
+        """
         # Get multipliers from config
-        premium_multiplier = float(self.config.get("transformation.premium_multiplier", 1.5))
-        standard_multiplier = float(self.config.get("transformation.standard_multiplier", 1.2))
+        premium_multiplier = self.config.get("business_rules.premium_multiplier", 1.5)
+        standard_multiplier = self.config.get("business_rules.standard_multiplier", 1.0)
         
-        df = (df.withColumn(
-            "transformed_value",
-            when(col("category") == "PREMIUM", col("value") * premium_multiplier)
-            .when(col("category") == "VIP", col("value") * 2.0)
-            .when(col("category") == "STANDARD", col("value") * standard_multiplier)
-            .otherwise(col("value"))
-        ))
-        
-        # Round to 2 decimal places
-        df = df.withColumn("transformed_value", spark_round(col("transformed_value"), 2))
-        
-        return df
-    
-    def _calculate_priority(self, df: DataFrame) -> DataFrame:
-        """Calculate priority based on value and category"""
-        self.logger.info("Calculating priority")
-        
-        df = (df.withColumn(
-            "priority",
-            when(col("transformed_value") >= 1000, lit(1))
-            .when(col("transformed_value") >= 750, lit(2))
-            .when(col("transformed_value") >= 300, lit(3))
-            .when(col("transformed_value") >= 100, lit(4))
-            .otherwise(lit(5))
-        ))
-        
-        # Override priority for VIP category
+        # Calculate transformed value based on category
         df = df.withColumn(
-            "priority",
-            when(col("category") == "VIP", lit(1))
-            .otherwise(col("priority"))
+            "transformed_value",
+            F.when(F.col("category") == "PREMIUM", F.col("value") * premium_multiplier)
+             .when(F.col("category") == "STANDARD", F.col("value") * standard_multiplier)
+             .otherwise(F.col("value"))
         )
         
         return df
     
     def _apply_category_rules(self, df: DataFrame) -> DataFrame:
-        """Apply category-specific transformation rules"""
-        self.logger.info("Applying category rules")
+        """
+        Apply category-specific transformation rules.
         
-        # Premium category gets additional boost
+        Args:
+            df: DataFrame to transform
+            
+        Returns:
+            DataFrame with category rules applied
+        """
+        # Set default category if empty
+        df = df.withColumn(
+            "category",
+            F.when(F.col("category").isNull() | (F.col("category") == ""), "UNCATEGORIZED")
+             .otherwise(F.col("category"))
+        )
+        
+        # Apply category-specific adjustments
         df = df.withColumn(
             "transformed_value",
-            when(
-                (col("category") == "PREMIUM") & (col("transformed_value") < 500),
-                col("transformed_value") * 1.1
-            ).otherwise(col("transformed_value"))
+            F.when(F.col("category") == "VIP", F.col("transformed_value") * 1.3)
+             .when(F.col("category") == "TRIAL", F.col("transformed_value") * 0.8)
+             .otherwise(F.col("transformed_value"))
+        )
+        
+        return df
+    
+    def _calculate_priority(self, df: DataFrame) -> DataFrame:
+        """
+        Calculate priority based on value and category.
+        Priority scale: 1 (highest) to 5 (lowest)
+        
+        Args:
+            df: DataFrame with value and category
+            
+        Returns:
+            DataFrame with priority column
+        """
+        df = df.withColumn(
+            "priority",
+            F.when(F.col("transformed_value") >= 1000, 1)
+             .when(F.col("transformed_value") >= 750, 2)
+             .when(F.col("transformed_value") >= 500, 3)
+             .when(F.col("transformed_value") >= 250, 4)
+             .otherwise(5)
+        )
+        
+        # Override priority for VIP category
+        df = df.withColumn(
+            "priority",
+            F.when(F.col("category") == "VIP", 1)
+             .otherwise(F.col("priority"))
         )
         
         return df
     
     def _apply_business_rules(self, df: DataFrame) -> DataFrame:
-        """Apply business rules to set status and perform validations"""
-        self.logger.info("Applying business rules")
+        """
+        Apply business rules to set status and other derived fields.
         
-        # Rule 1: Set status based on transformed value
-        df = (df.withColumn(
-            "status",
-            when(col("value").isNull() | (col("value") == 0), lit("INVALID"))
-            .when(col("transformed_value") >= 750, lit("HIGH_VALUE"))
-            .when(col("transformed_value") >= 300, lit("MEDIUM_VALUE"))
-            .otherwise(lit("LOW_VALUE"))
-        ))
+        Args:
+            df: DataFrame to apply rules to
+            
+        Returns:
+            DataFrame with business rules applied
+        """
+        self.logger.log_info(
+            component="TRANSFORMER",
+            message="Applying business rules"
+        )
         
-        # Rule 2: Validate name is not empty
+        # Rule 1: Set status based on value
         df = df.withColumn(
             "status",
-            when(trim(col("name")) == "", lit("INVALID"))
-            .otherwise(col("status"))
+            F.when(F.col("value").isNull() | (F.col("value") == 0), "INVALID")
+             .when(F.col("transformed_value") >= 750, "HIGH_VALUE")
+             .when(F.col("transformed_value") >= 300, "MEDIUM_VALUE")
+             .otherwise("LOW_VALUE")
+        )
+        
+        # Rule 2: Override priority for high value items
+        df = df.withColumn(
+            "priority",
+            F.when(F.col("transformed_value") >= 1000, 1)
+             .otherwise(F.col("priority"))
+        )
+        
+        # Rule 3: Additional name normalization
+        df = df.withColumn(
+            "name",
+            F.regexp_replace(F.col("name"), r'\s+', ' ')
         )
         
         return df
     
     def _enrich_data(self, df: DataFrame) -> DataFrame:
-        """Enrich data with additional information"""
-        self.logger.info("Enriching data")
+        """
+        Enrich data with additional information from config or reference tables.
         
-        # Load enrichment config if available
-        enable_enrichment = self.config.get("transformation.enable_enrichment", True)
+        Args:
+            df: DataFrame to enrich
+            
+        Returns:
+            Enriched DataFrame
+        """
+        # Load enrichment configuration
+        enrichment_enabled = self.config.get("transformation.enable_enrichment", True)
         
-        if not enable_enrichment:
+        if not enrichment_enabled:
             return df
         
-        # Example: Add calculated fields or lookup data
-        # In production, this might join with reference tables
+        # Apply premium category boost
+        df = df.withColumn(
+            "transformed_value",
+            F.when(F.col("category") == "PREMIUM", F.col("transformed_value") * 1.2)
+             .otherwise(F.col("transformed_value"))
+        )
+        
+        # Could join with reference tables here for additional enrichment
+        # Example:
+        # category_ref = self.spark.read.parquet("path/to/category_reference")
+        # df = df.join(category_ref, "category", "left")
         
         return df
     
     def _add_metadata(self, df: DataFrame) -> DataFrame:
-        """Add ETL metadata columns"""
-        self.logger.info("Adding metadata")
-        
-        df = (df
-              .withColumn("etl_run_id", lit(self.run_id))
-              .withColumn("processed_at", current_timestamp())
-              .withColumn("processed_by", lit(self.config.get("system.user", "etl_system"))))
-        
-        return df
-    
-    def validate_data(self, df: DataFrame) -> Tuple[bool, List[str]]:
         """
-        Validate transformed data
+        Add ETL metadata fields to transformed data.
+        
+        Args:
+            df: Transformed DataFrame
+            
+        Returns:
+            DataFrame with metadata columns added
+        """
+        return df.withColumn("etl_run_id", F.lit(self.run_id)) \
+                 .withColumn("processed_at", self.current_timestamp) \
+                 .withColumn("processed_by", F.lit(self.current_user))
+    
+    def validate_data(
+        self, 
+        df: DataFrame
+    ) -> Tuple[bool, List[str]]:
+        """
+        Validate transformed data against business rules.
         
         Args:
             df: DataFrame to validate
@@ -462,442 +687,330 @@ class DataTransformer:
         Returns:
             Tuple of (is_valid, list of validation errors)
         """
-        self.logger.info("Validating transformed data")
+        validation_errors = []
+        is_valid = True
         
-        errors = []
-        
-        # Validation 1: Check for null IDs
-        null_id_count = df.filter(col("id").isNull()).count()
+        # Rule 1: ID is required
+        null_id_count = df.filter(F.col("id").isNull()).count()
         if null_id_count > 0:
-            errors.append(f"{null_id_count} records with null ID")
+            validation_errors.append(f"{null_id_count} records with null ID")
+            is_valid = False
         
-        # Validation 2: Check for null names
-        null_name_count = df.filter(col("name").isNull() | (trim(col("name")) == "")).count()
+        # Rule 2: Name is required
+        null_name_count = df.filter(
+            F.col("name").isNull() | (F.col("name") == "")
+        ).count()
         if null_name_count > 0:
-            errors.append(f"{null_name_count} records with null or empty name")
+            validation_errors.append(f"{null_name_count} records with null/empty name")
+            is_valid = False
         
-        # Validation 3: Check for negative values
-        negative_value_count = df.filter(col("value") < 0).count()
+        # Rule 3: Value must be positive
+        negative_value_count = df.filter(F.col("value") < 0).count()
         if negative_value_count > 0:
-            errors.append(f"{negative_value_count} records with negative values")
+            validation_errors.append(f"{negative_value_count} records with negative value")
+            is_valid = False
         
-        # Validation 4: Check priority range
+        # Rule 4: Priority must be 1-5
         invalid_priority_count = df.filter(
-            (col("priority") < 1) | (col("priority") > 5)
+            (F.col("priority") < 1) | (F.col("priority") > 5)
         ).count()
         if invalid_priority_count > 0:
-            errors.append(f"{invalid_priority_count} records with invalid priority")
+            validation_errors.append(f"{invalid_priority_count} records with invalid priority")
+            is_valid = False
         
-        # Validation 5: Check for invalid status
-        invalid_status = df.filter(col("status") == "INVALID").count()
-        if invalid_status > 0:
-            self.logger.warning(f"{invalid_status} records marked as INVALID")
-        
-        is_valid = len(errors) == 0
+        # Rule 5: Category must not be empty
+        invalid_category_count = df.filter(
+            F.col("category").isNull() | (F.col("category") == "")
+        ).count()
+        if invalid_category_count > 0:
+            validation_errors.append(f"{invalid_category_count} records with invalid category")
+            is_valid = False
         
         if is_valid:
-            self.logger.info("Validation passed")
+            self.logger.log_info(
+                component="TRANSFORMER",
+                message="Data validation passed"
+            )
         else:
-            self.logger.error(f"Validation failed with {len(errors)} errors")
-            for error in errors:
-                self.logger.error(f"  - {error}")
+            self.logger.log_error(
+                component="TRANSFORMER",
+                message=f"Data validation failed with {len(validation_errors)} errors",
+                details="; ".join(validation_errors)
+            )
         
-        return is_valid, errors
+        return is_valid, validation_errors
 
 
 ===FILE: src/load.py===
 """
-PySpark Data Loading Module
-Loads transformed data to Delta Lake target with upsert capability
+Data loading module with batch processing and reconciliation.
+Replaces ABAP loader with PySpark DataFrame write operations.
 """
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, current_timestamp
-from delta.tables import DeltaTable
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
 from typing import Dict, Any, List
+from dataclasses import dataclass
 import logging
 
-from src.utils.logger import ETLLogger
-from src.utils.config import ConfigManager
+from src.logger import ETLLogger
+from src.config import Config
+
+
+@dataclass
+class LoadResult:
+    """Result of data loading operation."""
+    success_count: int
+    error_count: int
+    total_count: int
+    errors: List[str]
 
 
 class DataLoader:
     """
-    Loads transformed data to target Delta Lake tables
+    Handles data loading with support for:
+    - Batch processing
+    - Multiple write modes (insert, update, upsert)
+    - Data reconciliation
+    - Delta Lake ACID transactions
     """
     
-    def __init__(self, spark: SparkSession, run_id: str, config: ConfigManager):
-        self.spark = spark
-        self.run_id = run_id
-        self.config = config
-        self.logger = ETLLogger.get_logger("LOADER")
-        self.batch_size = config.get("loading.batch_size", 1000)
-    
-    def load_data(self, df: DataFrame, mode: str = "UPSERT") -> Dict[str, Any]:
+    def __init__(
+        self,
+        spark: SparkSession,
+        config: Config,
+        run_id: str,
+        target_type: str = "DATABASE",
+        batch_size: int = 1000
+    ):
         """
-        Main loading method
+        Initialize the loader.
+        
+        Args:
+            spark: Active SparkSession
+            config: Configuration object
+            run_id: Unique identifier for this ETL run
+            target_type: Type of target (DATABASE, DELTA, etc.)
+            batch_size: Number of records per batch
+        """
+        self.spark = spark
+        self.config = config
+        self.run_id = run_id
+        self.target_type = target_type.upper()
+        self.batch_size = batch_size
+        self.logger = ETLLogger.get_instance()
+    
+    def load_data(
+        self,
+        df: DataFrame,
+        mode: str = "upsert"
+    ) -> LoadResult:
+        """
+        Main loading method with batch processing.
         
         Args:
             df: Transformed DataFrame to load
-            mode: Loading mode (INSERT, UPDATE, UPSERT)
+            mode: Write mode - 'insert', 'update', 'upsert', 'overwrite'
             
         Returns:
-            Dictionary with load results
+            LoadResult with success/error counts
         """
-        self.logger.info(f"Starting data load - Mode: {mode}, Batch size: {self.batch_size}")
+        mode = mode.lower()
         
+        self.logger.log_info(
+            component="LOADER",
+            message=f"Starting load - Mode: {mode}, Batch size: {self.batch_size}"
+        )
+        
+        total_count = df.count()
+        errors = []
+        
+        try:
+            # Execute load based on mode
+            if mode == "insert":
+                success = self._insert_new(df)
+            elif mode == "update":
+                success = self._update_existing(df)
+            elif mode == "upsert":
+                success = self._upsert_data(df)
+            elif mode == "overwrite":
+                success = self._overwrite_data(df)
+            else:
+                raise ValueError(f"Unknown load mode: {mode}")
+            
+            if success:
+                success_count = total_count
+                error_count = 0
+                
+                # Perform reconciliation if enabled
+                if self.config.get("load.enable_reconciliation", True):
+                    reconciled = self._reconcile_data(df)
+                    if not reconciled:
+                        self.logger.log_warning(
+                            component="LOADER",
+                            message="Data reconciliation failed"
+                        )
+            else:
+                success_count = 0
+                error_count = total_count
+                errors.append("Load operation failed")
+            
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Load complete - Success: {success_count}, Errors: {error_count}"
+            )
+            
+            return LoadResult(
+                success_count=success_count,
+                error_count=error_count,
+                total_count=total_count,
+                errors=errors
+            )
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="LOADER",
+                message="Load operation failed",
+                details=str(e)
+            )
+            return LoadResult(
+                success_count=0,
+                error_count=total_count,
+                total_count=total_count,
+                errors=[str(e)]
+            )
+    
+    def _insert_new(self, df: DataFrame) -> bool:
+        """
+        Insert new records into target.
+        
+        Args:
+            df: DataFrame to insert
+            
+        Returns:
+            True if successful, False otherwise
+        """
         target_path = self.config.get("target.database.path")
         target_format = self.config.get("target.database.format", "delta")
         
         try:
-            if mode.upper() == "INSERT":
-                result = self._insert_new(df, target_path, target_format)
-            elif mode.upper() == "UPDATE":
-                result = self._update_existing(df, target_path)
-            elif mode.upper() == "UPSERT":
-                result = self._upsert_data(df, target_path)
-            else:
-                self.logger.warning(f"Unknown mode {mode}, defaulting to UPSERT")
-                result = self._upsert_data(df, target_path)
+            df.write \
+                .format(target_format) \
+                .mode("append") \
+                .save(target_path)
             
-            # Perform reconciliation if enabled
-            if self.config.get("loading.enable_reconciliation", True):
-                self._reconcile_data(df, target_path)
+            return True
             
-            self.logger.info(
-                f"Load complete - Success: {result['success_count']}, "
-                f"Errors: {result['error_count']}"
+        except Exception as e:
+            self.logger.log_error(
+                component="LOADER",
+                message="Insert operation failed",
+                details=str(e)
             )
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Data load failed: {str(e)}", exc_info=True)
-            return {
-                "success_count": 0,
-                "error_count": df.count(),
-                "total_count": df.count(),
-                "errors": [str(e)]
-            }
+            return False
     
-    def _insert_new(self, df: DataFrame, target_path: str, target_format: str) -> Dict[str, Any]:
+    def _update_existing(self, df: DataFrame) -> bool:
         """
-        Insert new records (append mode)
-        
-        Args:
-            df: DataFrame to insert
-            target_path: Target table path
-            target_format: Target format (delta)
-            
-        Returns:
-            Load result dictionary
-        """
-        self.logger.info(f"Inserting {df.count()} records")
-        
-        try:
-            (df.write
-             .format(target_format)
-             .mode("append")
-             .save(target_path))
-            
-            record_count = df.count()
-            
-            return {
-                "success_count": record_count,
-                "error_count": 0,
-                "total_count": record_count,
-                "errors": []
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Insert failed: {str(e)}")
-            return {
-                "success_count": 0,
-                "error_count": df.count(),
-                "total_count": df.count(),
-                "errors": [str(e)]
-            }
-    
-    def _update_existing(self, df: DataFrame, target_path: str) -> Dict[str, Any]:
-        """
-        Update existing records using Delta merge
+        Update existing records in target.
+        For Delta Lake, uses merge operation.
         
         Args:
             df: DataFrame with updates
-            target_path: Target Delta table path
             
         Returns:
-            Load result dictionary
+            True if successful, False otherwise
         """
-        self.logger.info(f"Updating {df.count()} records")
+        target_path = self.config.get("target.database.path")
         
         try:
-            # Load Delta table
-            delta_table = DeltaTable.forPath(self.spark, target_path)
+            from delta.tables import DeltaTable
+            
+            # Load existing target table
+            target_table = DeltaTable.forPath(self.spark, target_path)
             
             # Perform merge (update only)
-            merge_result = (delta_table.alias("target")
-                           .merge(
-                               df.alias("source"),
-                               "target.id = source.id"
-                           )
-                           .whenMatchedUpdateAll()
-                           .execute())
+            target_table.alias("target") \
+                .merge(
+                    df.alias("source"),
+                    "target.id = source.id"
+                ) \
+                .whenMatchedUpdateAll() \
+                .execute()
             
-            # Get metrics
-            updated_count = df.count()  # Approximation
-            
-            return {
-                "success_count": updated_count,
-                "error_count": 0,
-                "total_count": updated_count,
-                "errors": []
-            }
+            return True
             
         except Exception as e:
-            self.logger.error(f"Update failed: {str(e)}")
-            return {
-                "success_count": 0,
-                "error_count": df.count(),
-                "total_count": df.count(),
-                "errors": [str(e)]
-            }
+            self.logger.log_error(
+                component="LOADER",
+                message="Update operation failed",
+                details=str(e)
+            )
+            return False
     
-    def _upsert_data(self, df: DataFrame, target_path: str) -> Dict[str, Any]:
+    def _upsert_data(self, df: DataFrame) -> bool:
         """
-        Upsert (insert or update) records using Delta merge
+        Upsert data - update existing records, insert new ones.
+        Uses Delta Lake merge for ACID compliance.
         
         Args:
             df: DataFrame to upsert
-            target_path: Target Delta table path
             
         Returns:
-            Load result dictionary
+            True if successful, False otherwise
         """
-        self.logger.info(f"Upserting {df.count()} records to {target_path}")
+        target_path = self.config.get("target.database.path")
         
         try:
-            # Check if table exists
+            from delta.tables import DeltaTable
+            
+            # Check if target exists
             try:
-                delta_table = DeltaTable.forPath(self.spark, target_path)
+                target_table = DeltaTable.forPath(self.spark, target_path)
                 table_exists = True
             except:
                 table_exists = False
-                self.logger.info("Target table does not exist, will create")
             
             if not table_exists:
-                # Create table with first write
-                (df.write
-                 .format("delta")
-                 .mode("overwrite")
-                 .save(target_path))
-                
-                return {
-                    "success_count": df.count(),
-                    "error_count": 0,
-                    "total_count": df.count(),
-                    "errors": []
-                }
-            
-            # Perform merge (upsert)
-            (delta_table.alias("target")
-             .merge(
-                 df.alias("source"),
-                 "target.id = source.id"
-             )
-             .whenMatchedUpdateAll()
-             .whenNotMatchedInsertAll()
-             .execute())
-            
-            record_count = df.count()
-            
-            return {
-                "success_count": record_count,
-                "error_count": 0,
-                "total_count": record_count,
-                "errors": []
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Upsert failed: {str(e)}")
-            return {
-                "success_count": 0,
-                "error_count": df.count(),
-                "total_count": df.count(),
-                "errors": [str(e)]
-            }
-    
-    def _reconcile_data(self, source_df: DataFrame, target_path: str) -> bool:
-        """
-        Reconcile loaded data with source
-        
-        Args:
-            source_df: Source DataFrame
-            target_path: Target table path
-            
-        Returns:
-            True if reconciliation passes
-        """
-        self.logger.info("Performing data reconciliation")
-        
-        try:
-            # Load target data for this run
-            target_df = (self.spark.read
-                        .format("delta")
-                        .load(target_path)
-                        .filter(col("etl_run_id") == self.run_id))
-            
-            source_count = source_df.count()
-            target_count = target_df.count()
-            
-            if source_count == target_count:
-                self.logger.info(f"Reconciliation passed: {source_count} records")
-                return True
+                # First load - just write
+                df.write \
+                    .format("delta") \
+                    .mode("overwrite") \
+                    .save(target_path)
             else:
-                self.logger.warning(
-                    f"Reconciliation mismatch - Source: {source_count}, Target: {target_count}"
-                )
-                return False
-                
+                # Perform merge (upsert)
+                target_table.alias("target") \
+                    .merge(
+                        df.alias("source"),
+                        "target.id = source.id"
+                    ) \
+                    .whenMatchedUpdateAll() \
+                    .whenNotMatchedInsertAll() \
+                    .execute()
+            
+            return True
+            
         except Exception as e:
-            self.logger.warning(f"Reconciliation failed: {str(e)}")
+            self.logger.log_error(
+                component="LOADER",
+                message="Upsert operation failed",
+                details=str(e)
+            )
             return False
     
-    def optimize_table(self, target_path: str):
+    def _overwrite_data(self, df: DataFrame) -> bool:
         """
-        Optimize Delta table (compact small files, Z-order)
+        Overwrite entire target table.
         
         Args:
-            target_path: Path to Delta table
-        """
-        self.logger.info("Optimizing Delta table")
-        
-        try:
-            delta_table = DeltaTable.forPath(self.spark, target_path)
-            
-            # Compact files
-            delta_table.optimize().executeCompaction()
-            
-            # Z-order by commonly filtered columns
-            z_order_columns = self.config.get("loading.z_order_columns", ["id", "category"])
-            if z_order_columns:
-                delta_table.optimize().executeZOrderBy(*z_order_columns)
-            
-            self.logger.info("Table optimization complete")
-            
-        except Exception as e:
-            self.logger.warning(f"Table optimization failed: {str(e)}")
-    
-    def vacuum_table(self, target_path: str, retention_hours: int = 168):
-        """
-        Vacuum old versions from Delta table
-        
-        Args:
-            target_path: Path to Delta table
-            retention_hours: Retention period in hours (default 7 days)
-        """
-        self.logger.info(f"Vacuuming Delta table (retention: {retention_hours}h)")
-        
-        try:
-            delta_table = DeltaTable.forPath(self.spark, target_path)
-            delta_table.vacuum(retention_hours)
-            
-            self.logger.info("Table vacuum complete")
-            
-        except Exception as e:
-            self.logger.warning(f"Table vacuum failed: {str(e)}")
-
-
-===FILE: src/orchestrator.py===
-"""
-ETL Orchestrator - Main pipeline coordinator
-"""
-
-from pyspark.sql import SparkSession
-from datetime import datetime
-from typing import Dict, Any
-import uuid
-
-from src.extract import DataExtractor
-from src.transform import DataTransformer
-from src.load import DataLoader
-from src.utils.logger import ETLLogger
-from src.utils.config import ConfigManager
-from src.utils.monitoring import ETLMonitor
-
-
-class ETLOrchestrator:
-    """
-    Orchestrates the complete ETL pipeline
-    """
-    
-    def __init__(self, spark: SparkSession, config: ConfigManager, run_type: str = "MANUAL"):
-        self.spark = spark
-        self.config = config
-        self.run_type = run_type
-        self.run_id = self._generate_run_id()
-        self.logger = ETLLogger.get_logger("ORCHESTRATOR")
-        self.monitor = ETLMonitor(spark, config)
-    
-    def _generate_run_id(self) -> str:
-        """Generate unique run ID"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        return f"RUN_{timestamp}_{unique_id}"
-    
-    def execute_etl(
-        self,
-        source_type: str = "DATABASE",
-        target_type: str = "DATABASE",
-        filter_condition: str = None,
-        max_records: int = 0
-    ) -> Dict[str, Any]:
-        """
-        Execute complete ETL pipeline
-        
-        Args:
-            source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
-            target_type: Type of target
-            filter_condition: Optional filter
-            max_records: Max records to process
+            df: DataFrame to write
             
         Returns:
-            ETL execution results
+            True if successful, False otherwise
         """
-        self.logger.info(f"ETL execution started - Run ID: {self.run_id}")
-        start_time = datetime.now()
-        
-        result = {
-            "run_id": self.run_id,
-            "status": "RUNNING",
-            "start_time": start_time.isoformat(),
-            "records_extracted": 0,
-            "records_transformed": 0,
-            "records_loaded": 0,
-            "records_failed": 0,
-            "error_count": 0,
-            "warnings": []
-        }
+        target_path = self.config.get("target.database.path")
+        target_format = self.config.get("target.database.format", "delta")
         
         try:
-            # Log run start
-            self.monitor.log_run_start(self.run_id, self.run_type)
-            
-            # Step 1: Extract
-            self.logger.info("=" * 60)
-            self.logger.info("STEP 1: EXTRACTION")
-            self.logger.info("=" * 60)
-            
-            extractor = DataExtractor(self.spark, self.run_id, self.config)
-            source_df = extractor.extract_data(source_type, filter_condition, max_records)
-            
-            result["records_extracted"] = source_df.count()
-            
-            if result["records_extracted"] == 0:
-                self.logger.warning("No data extracted - ETL stopping")
-                result["status"] = "NO_DATA"
-                return result
-            
-            # Step 2: Transform
-            self.logger.info("=" * 60)
-            self.logger.info("STEP 2: TRANSFORMATION")
+            df.write \
+                .format(target_format) \
+                .mode("over
