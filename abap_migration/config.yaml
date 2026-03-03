@@ -1,113 +1,72 @@
-# Data Quality Validation Configuration
+# PySpark ETL Configuration
 
-# Application settings
-app_name: "ETL Data Quality Validation"
-log_level: "INFO"
-
-# Spark configuration
+# Spark Configuration
 spark:
-  app_name: "data_quality_validator"
+  app_name: "ETL_Data_Pipeline"
   master: "local[*]"
   config:
-    spark.sql.shuffle.partitions: "200"
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.default.parallelism: "200"
+    spark.sql.shuffle.partitions: "200"
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+    spark.sql.debug.maxToStringFields: "100"
 
-# Data source configuration
-data_source:
-  format: "parquet"
-  path: "/data/transformed/"
-  primary_key: "id"
-  
-# Required fields for completeness check
-required_fields:
-  - "id"
-  - "name"
-  - "value"
-  - "category"
-  - "status"
-
-# Valid values for categorical fields
-valid_statuses:
-  - "ACTIVE"
-  - "INACTIVE"
-  - "TRANSFORMED"
-  - "HIGH_VALUE"
-  - "MEDIUM_VALUE"
-  - "LOW_VALUE"
-  - "INVALID"
-
-valid_categories:
-  - "PREMIUM"
-  - "STANDARD"
-  - "BASIC"
-  - "VIP"
-  - "TRIAL"
-  - "UNCATEGORIZED"
-
-# Quality thresholds (percentages)
-quality_thresholds:
-  # Completeness thresholds
-  max_null_percentage: 5.0  # Maximum percentage of null values allowed
-  min_field_completeness: 95.0  # Minimum completeness per field
-  
-  # Uniqueness thresholds
-  max_duplicate_percentage: 0.0  # Maximum percentage of duplicate records
-  
-  # Validity thresholds
-  max_invalid_percentage: 1.0  # Maximum percentage of invalid values
-  
-  # Consistency thresholds
-  max_inconsistent_percentage: 5.0  # Maximum percentage of inconsistent records
-  min_transformation_ratio: 0.8  # Minimum ratio for transformed vs original values
-  
-  # Record count thresholds
-  min_record_count: 10  # Minimum expected record count
-  max_record_count: 1000000  # Maximum expected record count
-  
-  # Value range thresholds
-  max_out_of_range_percentage: 1.0  # Maximum percentage of out-of-range values
-
-# Value range constraints
-value_constraints:
-  value_min: 0
-  value_max: 10000
-  priority_min: 1
-  priority_max: 5
-
-# Anomaly detection settings
-anomaly_detection:
-  enable_volume_anomaly_detection: false
-  enable_outlier_detection: true
-  outlier_method: "iqr"  # Options: iqr, zscore
-  outlier_threshold: 1.5  # For IQR method
-  
-# Report settings
-reporting:
-  generate_html_report: true
-  generate_json_report: true
-  save_to_database: true
-  email_on_failure: false
-  email_recipients:
-    - "data-quality-team@example.com"
-  
-# Output paths
-output:
-  report_path: "/data/quality_reports/"
-  metrics_path: "/data/quality_metrics/"
-  
-# Database connection for storing quality metrics
+# Database Configuration
 database:
-  host: "localhost"
-  port: 5432
-  database: "etl_metadata"
-  schema: "data_quality"
-  table: "validation_results"
-  
-# Logging configuration
-logging:
-  log_dir: "/logs/quality_validation"
-  log_file: "data_quality_{run_id}.log"
-  console_output: true
-  file_output: true
+  url: "jdbc:postgresql://localhost:5432/etl_db"
+  user: "etl_user"
+  password: "${DB_PASSWORD}"  # Use environment variable
+  driver: "org.postgresql.Driver"
+  source_table: "etl_source_data"
+  target_table: "etl_target_data"
+  run_log_table: "etl_run_log"
+
+# Staging Configuration
+staging:
+  path: "/data/staging"
+  format: "parquet"
+  compression: "snappy"
+
+# Loading Configuration
+loading:
+  batch_size: 1000
+  mode: "upsert"  # append, overwrite, upsert
+  enable_reconciliation: true
+
+# Business Rules
+business_rules:
+  premium_multiplier: 1.5
+  standard_multiplier: 1.2
+  vip_multiplier: 2.0
+  high_value_threshold: 750
+  medium_value_threshold: 300
+  critical_value_threshold: 1000
+
+# Processing Configuration
+processing:
+  user: "etl_system"
+  max_retries: 3
+  retry_delay_seconds: 60
+
+# Data Quality
+data_quality:
+  enable_validation: true
+  enable_profiling: true
+  enable_anomaly_detection: false
+  completeness_threshold: 0.95
+  uniqueness_threshold: 1.0
+
+# Monitoring
+monitoring:
+  enable_metrics: true
+  enable_alerts: true
+  alert_email: "admin@example.com"
+  log_level: "INFO"
+  retention_days: 90
+
+# Performance
+performance:
+  enable_caching: true
+  repartition_size: 200
+  broadcast_threshold: "10MB"
