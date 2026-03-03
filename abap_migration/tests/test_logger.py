@@ -1,9 +1,9 @@
 """
 Unit tests for ETL Logger utility
-Tests singleton pattern, logging functionality, and in-memory storage
 """
 
 import pytest
+import time
 from datetime import datetime
 from src.logger import ETLLogger, LogEntry, get_logger
 
@@ -54,7 +54,6 @@ class TestETLLoggerSingleton:
         logger2 = ETLLogger.get_instance()
         
         assert logger1 is logger2
-        assert id(logger1) == id(logger2)
     
     def test_get_logger_convenience_function(self):
         """Test convenience function returns same instance"""
@@ -62,97 +61,209 @@ class TestETLLoggerSingleton:
         logger2 = ETLLogger.get_instance()
         
         assert logger1 is logger2
-    
-    def test_singleton_state_persistence(self):
-        """Test that state persists across instance calls"""
-        logger1 = ETLLogger.get_instance()
-        logger1.log_info("TEST", "First message")
-        
-        logger2 = ETLLogger.get_instance()
-        logs = logger2.get_logs()
-        
-        assert len(logs) >= 1
-        assert any(log['message'] == "First message" for log in logs)
 
 
-class TestETLLoggerLogging:
-    """Test logging functionality"""
+class TestETLLoggerBasicLogging:
+    """Test basic logging functionality"""
     
     @pytest.fixture(autouse=True)
     def setup_and_teardown(self):
-        """Clear logs before and after each test"""
-        logger = ETLLogger.get_instance()
+        """Setup and teardown for each test"""
+        logger = get_logger()
         logger.clear_logs()
         yield
         logger.clear_logs()
     
     def test_log_info(self):
-        """Test INFO level logging"""
-        logger = ETLLogger.get_instance()
-        logger.log_info("EXTRACTOR", "Extraction started")
+        """Test logging info message"""
+        logger = get_logger()
+        
+        logger.log_info('TEST', 'Test info message')
         
         logs = logger.get_logs()
         assert len(logs) == 1
+        assert logs[0]['level'] == 'INFO'
+        assert logs[0]['component'] == 'TEST'
+        assert logs[0]['message'] == 'Test info message'
+    
+    def test_log_info_with_details(self):
+        """Test logging info message with details"""
+        logger = get_logger()
         
-        log = logs[0]
-        assert log['level'] == 'INFO'
-        assert log['component'] == 'EXTRACTOR'
-        assert log['message'] == 'Extraction started'
+        logger.log_info('TEST', 'Test message', 'Additional details')
+        
+        logs = logger.get_logs()
+        assert len(logs) == 1
+        assert logs[0]['details'] == 'Additional details'
     
     def test_log_warning(self):
-        """Test WARNING level logging"""
-        logger = ETLLogger.get_instance()
-        logger.log_warning("TRANSFORMER", "Missing values detected")
+        """Test logging warning message"""
+        logger = get_logger()
+        
+        logger.log_warning('TEST', 'Test warning message')
         
         logs = logger.get_logs()
         assert len(logs) == 1
-        
-        log = logs[0]
-        assert log['level'] == 'WARNING'
-        assert log['component'] == 'TRANSFORMER'
+        assert logs[0]['level'] == 'WARNING'
     
     def test_log_error(self):
-        """Test ERROR level logging"""
-        logger = ETLLogger.get_instance()
-        logger.log_error("LOADER", "Failed to load data", "Connection timeout")
+        """Test logging error message"""
+        logger = get_logger()
+        
+        logger.log_error('TEST', 'Test error message')
         
         logs = logger.get_logs()
         assert len(logs) == 1
-        
-        log = logs[0]
-        assert log['level'] == 'ERROR'
-        assert log['component'] == 'LOADER'
-        assert log['details'] == 'Connection timeout'
+        assert logs[0]['level'] == 'ERROR'
     
-    def test_log_debug(self):
-        """Test DEBUG level logging"""
-        logger = ETLLogger.get_instance()
-        logger.log_debug("ORCHESTRATOR", "Processing batch 1")
+    def test_multiple_logs(self):
+        """Test logging multiple messages"""
+        logger = get_logger()
+        
+        logger.log_info('EXTRACTOR', 'Starting extraction')
+        logger.log_info('EXTRACTOR', 'Extraction complete')
+        logger.log_warning('TRANSFORMER', 'Missing values detected')
+        logger.log_error('LOADER', 'Load failed')
         
         logs = logger.get_logs()
-        assert len(logs) == 1
-        
-        log = logs[0]
-        assert log['level'] == 'DEBUG'
+        assert len(logs) == 4
+
+
+class TestETLLoggerRetrieval:
+    """Test log retrieval functionality"""
     
-    def test_log_with_details(self):
-        """Test logging with additional details"""
-        logger = ETLLogger.get_instance()
-        logger.log_info(
-            "EXTRACTOR",
-            "Extracted records",
-            "Total: 1000 records"
-        )
+    @pytest.fixture(autouse=True)
+    def setup_and_teardown(self):
+        """Setup test data and cleanup"""
+        logger = get_logger()
+        logger.clear_logs()
         
+        # Create test logs
+        logger.log_info('EXTRACTOR', 'Extract started')
+        logger.log_info('EXTRACTOR', 'Extract completed')
+        logger.log_warning('TRANSFORMER', 'Data quality warning')
+        logger.log_error('LOADER', 'Load failed')
+        logger.log_error('LOADER', 'Retry failed')
+        
+        yield
+        
+        logger.clear_logs()
+    
+    def test_get_all_logs(self):
+        """Test retrieving all logs"""
+        logger = get_logger()
         logs = logger.get_logs()
-        log = logs[0]
         
-        assert log['details'] == 'Total: 1000 records'
+        assert len(logs) == 5
     
-    def test_log_timestamp_format(self):
+    def test_get_logs_by_level_info(self):
+        """Test filtering logs by INFO level"""
+        logger = get_logger()
+        info_logs = logger.get_logs_by_level('INFO')
+        
+        assert len(info_logs) == 2
+        assert all(log['level'] == 'INFO' for log in info_logs)
+    
+    def test_get_logs_by_level_warning(self):
+        """Test filtering logs by WARNING level"""
+        logger = get_logger()
+        warning_logs = logger.get_logs_by_level('WARNING')
+        
+        assert len(warning_logs) == 1
+        assert warning_logs[0]['level'] == 'WARNING'
+    
+    def test_get_logs_by_level_error(self):
+        """Test filtering logs by ERROR level"""
+        logger = get_logger()
+        error_logs = logger.get_logs_by_level('ERROR')
+        
+        assert len(error_logs) == 2
+        assert all(log['level'] == 'ERROR' for log in error_logs)
+    
+    def test_get_logs_by_component(self):
+        """Test filtering logs by component"""
+        logger = get_logger()
+        
+        extractor_logs = logger.get_logs_by_component('EXTRACTOR')
+        assert len(extractor_logs) == 2
+        assert all(log['component'] == 'EXTRACTOR' for log in extractor_logs)
+        
+        loader_logs = logger.get_logs_by_component('LOADER')
+        assert len(loader_logs) == 2
+        assert all(log['component'] == 'LOADER' for log in loader_logs)
+    
+    def test_get_log_count(self):
+        """Test getting log counts by level"""
+        logger = get_logger()
+        counts = logger.get_log_count()
+        
+        assert counts['INFO'] == 2
+        assert counts['WARNING'] == 1
+        assert counts['ERROR'] == 2
+    
+    def test_export_logs_to_dict(self):
+        """Test exporting logs with metadata"""
+        logger = get_logger()
+        export = logger.export_logs_to_dict()
+        
+        assert 'total_logs' in export
+        assert 'counts_by_level' in export
+        assert 'logs' in export
+        
+        assert export['total_logs'] == 5
+        assert export['counts_by_level']['INFO'] == 2
+        assert export['counts_by_level']['WARNING'] == 1
+        assert export['counts_by_level']['ERROR'] == 2
+        assert len(export['logs']) == 5
+
+
+class TestETLLoggerClearLogs:
+    """Test log clearing functionality"""
+    
+    def test_clear_logs(self):
+        """Test clearing all logs"""
+        logger = get_logger()
+        
+        logger.log_info('TEST', 'Message 1')
+        logger.log_info('TEST', 'Message 2')
+        
+        assert len(logger.get_logs()) == 2
+        
+        logger.clear_logs()
+        
+        assert len(logger.get_logs()) == 0
+    
+    def test_clear_logs_resets_counts(self):
+        """Test that clearing logs resets counts"""
+        logger = get_logger()
+        
+        logger.log_info('TEST', 'Info message')
+        logger.log_error('TEST', 'Error message')
+        
+        logger.clear_logs()
+        
+        counts = logger.get_log_count()
+        assert counts['INFO'] == 0
+        assert counts['WARNING'] == 0
+        assert counts['ERROR'] == 0
+
+
+class TestETLLoggerTimestamp:
+    """Test timestamp functionality"""
+    
+    @pytest.fixture(autouse=True)
+    def setup_and_teardown(self):
+        """Setup and teardown"""
+        logger = get_logger()
+        logger.clear_logs()
+        yield
+        logger.clear_logs()
+    
+    def test_timestamp_format(self):
         """Test that timestamps are properly formatted"""
-        logger = ETLLogger.get_instance()
-        logger.log_info("TEST", "Test message")
+        logger = get_logger()
+        
+        logger.log_info('TEST', 'Test message')
         
         logs = logger.get_logs()
         timestamp = logs[0]['timestamp']
@@ -165,171 +276,58 @@ class TestETLLoggerLogging:
         assert timestamp[13] == ':'
         assert timestamp[16] == ':'
         assert timestamp[19] == '.'
-
-
-class TestETLLoggerRetrieval:
-    """Test log retrieval functionality"""
     
-    @pytest.fixture(autouse=True)
-    def setup_and_teardown(self):
-        """Setup test data and cleanup"""
-        logger = ETLLogger.get_instance()
-        logger.clear_logs()
+    def test_timestamps_are_sequential(self):
+        """Test that timestamps increase sequentially"""
+        logger = get_logger()
         
-        # Add test logs
-        logger.log_info("EXTRACTOR", "Info message 1")
-        logger.log_info("TRANSFORMER", "Info message 2")
-        logger.log_warning("EXTRACTOR", "Warning message")
-        logger.log_error("LOADER", "Error message")
-        logger.log_debug("ORCHESTRATOR", "Debug message")
-        
-        yield
-        logger.clear_logs()
-    
-    def test_get_all_logs(self):
-        """Test retrieving all logs"""
-        logger = ETLLogger.get_instance()
-        logs = logger.get_logs()
-        
-        assert len(logs) == 5
-        assert all(isinstance(log, dict) for log in logs)
-    
-    def test_get_logs_by_level(self):
-        """Test filtering logs by level"""
-        logger = ETLLogger.get_instance()
-        
-        info_logs = logger.get_logs_by_level('INFO')
-        assert len(info_logs) == 2
-        assert all(log['level'] == 'INFO' for log in info_logs)
-        
-        warning_logs = logger.get_logs_by_level('WARNING')
-        assert len(warning_logs) == 1
-        
-        error_logs = logger.get_logs_by_level('ERROR')
-        assert len(error_logs) == 1
-    
-    def test_get_logs_by_component(self):
-        """Test filtering logs by component"""
-        logger = ETLLogger.get_instance()
-        
-        extractor_logs = logger.get_logs_by_component('EXTRACTOR')
-        assert len(extractor_logs) == 2
-        assert all(log['component'] == 'EXTRACTOR' for log in extractor_logs)
-        
-        transformer_logs = logger.get_logs_by_component('TRANSFORMER')
-        assert len(transformer_logs) == 1
-    
-    def test_get_error_count(self):
-        """Test counting error logs"""
-        logger = ETLLogger.get_instance()
-        error_count = logger.get_error_count()
-        
-        assert error_count == 1
-    
-    def test_get_warning_count(self):
-        """Test counting warning logs"""
-        logger = ETLLogger.get_instance()
-        warning_count = logger.get_warning_count()
-        
-        assert warning_count == 1
-    
-    def test_get_log_summary(self):
-        """Test log summary statistics"""
-        logger = ETLLogger.get_instance()
-        summary = logger.get_log_summary()
-        
-        assert summary['total'] == 5
-        assert summary['info'] == 2
-        assert summary['warning'] == 1
-        assert summary['error'] == 1
-        assert summary['debug'] == 1
-    
-    def test_export_logs_to_dict(self):
-        """Test exporting logs with summary"""
-        logger = ETLLogger.get_instance()
-        export = logger.export_logs_to_dict()
-        
-        assert 'summary' in export
-        assert 'logs' in export
-        assert export['summary']['total'] == 5
-        assert len(export['logs']) == 5
-
-
-class TestETLLoggerStorage:
-    """Test in-memory storage management"""
-    
-    @pytest.fixture(autouse=True)
-    def setup_and_teardown(self):
-        """Clear logs before and after each test"""
-        logger = ETLLogger.get_instance()
-        logger.clear_logs()
-        yield
-        logger.clear_logs()
-    
-    def test_clear_logs(self):
-        """Test clearing log storage"""
-        logger = ETLLogger.get_instance()
-        
-        logger.log_info("TEST", "Message 1")
-        logger.log_info("TEST", "Message 2")
-        assert len(logger.get_logs()) == 2
-        
-        logger.clear_logs()
-        assert len(logger.get_logs()) == 0
-    
-    def test_multiple_logs_storage(self):
-        """Test storing multiple log entries"""
-        logger = ETLLogger.get_instance()
-        
-        for i in range(10):
-            logger.log_info("TEST", f"Message {i}")
+        logger.log_info('TEST', 'Message 1')
+        time.sleep(0.01)  # Small delay
+        logger.log_info('TEST', 'Message 2')
         
         logs = logger.get_logs()
-        assert len(logs) == 10
+        timestamp1 = logs[0]['timestamp']
+        timestamp2 = logs[1]['timestamp']
         
-        # Verify order preservation
-        for i, log in enumerate(logs):
-            assert log['message'] == f"Message {i}"
-    
-    def test_log_persistence_across_operations(self):
-        """Test that logs persist across different operations"""
-        logger = ETLLogger.get_instance()
-        
-        logger.log_info("EXTRACTOR", "Extract started")
-        logger.log_info("TRANSFORMER", "Transform started")
-        
-        # Retrieve by level
-        info_logs = logger.get_logs_by_level('INFO')
-        assert len(info_logs) == 2
-        
-        # All logs should still be available
-        all_logs = logger.get_logs()
-        assert len(all_logs) == 2
+        assert timestamp1 < timestamp2
 
 
 class TestETLLoggerThreadSafety:
-    """Test thread safety of singleton pattern"""
+    """Test thread-safety of logger"""
     
-    def test_concurrent_instance_creation(self):
-        """Test that concurrent access returns same instance"""
+    @pytest.fixture(autouse=True)
+    def setup_and_teardown(self):
+        """Setup and teardown"""
+        logger = get_logger()
+        logger.clear_logs()
+        yield
+        logger.clear_logs()
+    
+    def test_concurrent_logging(self):
+        """Test thread-safe logging (basic test)"""
         import threading
         
-        instances = []
+        logger = get_logger()
         
-        def get_instance():
-            instances.append(ETLLogger.get_instance())
+        def log_messages(component, count):
+            for i in range(count):
+                logger.log_info(component, f'Message {i}')
         
-        threads = [threading.Thread(target=get_instance) for _ in range(10)]
-        
-        for thread in threads:
+        threads = []
+        for i in range(5):
+            thread = threading.Thread(
+                target=log_messages,
+                args=(f'THREAD_{i}', 10)
+            )
+            threads.append(thread)
             thread.start()
         
         for thread in threads:
             thread.join()
         
-        # All instances should be the same object
-        assert all(inst is instances[0] for inst in instances)
-        assert len(set(id(inst) for inst in instances)) == 1
+        # Should have 50 log entries (5 threads * 10 messages)
+        logs = logger.get_logs()
+        assert len(logs) == 50
 
 
 class TestETLLoggerEdgeCases:
@@ -337,52 +335,68 @@ class TestETLLoggerEdgeCases:
     
     @pytest.fixture(autouse=True)
     def setup_and_teardown(self):
-        """Clear logs before and after each test"""
-        logger = ETLLogger.get_instance()
+        """Setup and teardown"""
+        logger = get_logger()
         logger.clear_logs()
         yield
         logger.clear_logs()
     
-    def test_empty_message(self):
-        """Test logging with empty message"""
-        logger = ETLLogger.get_instance()
-        logger.log_info("TEST", "")
+    def test_empty_component(self):
+        """Test logging with empty component"""
+        logger = get_logger()
+        
+        logger.log_info('', 'Message with empty component')
         
         logs = logger.get_logs()
         assert len(logs) == 1
-        assert logs[0]['message'] == ""
+        assert logs[0]['component'] == ''
     
-    def test_none_details(self):
-        """Test logging without details"""
-        logger = ETLLogger.get_instance()
-        logger.log_info("TEST", "Message", None)
+    def test_empty_message(self):
+        """Test logging with empty message"""
+        logger = get_logger()
+        
+        logger.log_info('TEST', '')
         
         logs = logger.get_logs()
+        assert len(logs) == 1
+        assert logs[0]['message'] == ''
+    
+    def test_none_details(self):
+        """Test logging with None details"""
+        logger = get_logger()
+        
+        logger.log_info('TEST', 'Message', None)
+        
+        logs = logger.get_logs()
+        assert len(logs) == 1
         assert logs[0]['details'] is None
     
     def test_special_characters_in_message(self):
         """Test logging with special characters"""
-        logger = ETLLogger.get_instance()
-        message = "Test with special chars: @#$%^&*()[]{}|"
-        logger.log_info("TEST", message)
+        logger = get_logger()
+        
+        special_msg = "Test with special chars: @#$%^&*(){}[]|\\:;\"'<>,.?/"
+        logger.log_info('TEST', special_msg)
         
         logs = logger.get_logs()
-        assert logs[0]['message'] == message
+        assert logs[0]['message'] == special_msg
     
     def test_unicode_characters(self):
         """Test logging with unicode characters"""
-        logger = ETLLogger.get_instance()
-        message = "Unicode test: 中文 العربية 日本語"
-        logger.log_info("TEST", message)
+        logger = get_logger()
+        
+        unicode_msg = "Test with unicode: 你好世界 🎉 ñ ü"
+        logger.log_info('TEST', unicode_msg)
         
         logs = logger.get_logs()
-        assert logs[0]['message'] == message
+        assert logs[0]['message'] == unicode_msg
     
-    def test_long_message(self):
+    def test_very_long_message(self):
         """Test logging with very long message"""
-        logger = ETLLogger.get_instance()
-        long_message = "A" * 10000
-        logger.log_info("TEST", long_message)
+        logger = get_logger()
+        
+        long_msg = "A" * 10000
+        logger.log_info('TEST', long_msg)
         
         logs = logger.get_logs()
         assert len(logs[0]['message']) == 10000
