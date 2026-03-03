@@ -1,191 +1,118 @@
-# PySpark ETL Framework Configuration
+# ETL Framework Configuration
 
-# Spark Configuration
-spark:
-  app_name: "ETL_Framework"
-  master: "local[*]"
-  log_level: "WARN"
-  config:
-    spark.sql.shuffle.partitions: 200
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
-    spark.executor.memory: "4g"
-    spark.driver.memory: "2g"
-    spark.sql.sources.partitionOverwriteMode: "dynamic"
-
-# Database Configuration
+# Database Settings
 database:
-  source:
-    url: "jdbc:postgresql://localhost:5432/source_db"
-    driver: "org.postgresql.Driver"
-    user: "etl_user"
-    password_env: "DB_SOURCE_PASSWORD"
-    properties:
-      fetchsize: 1000
-  
-  target:
-    url: "jdbc:postgresql://localhost:5432/target_db"
-    driver: "org.postgresql.Driver"
-    user: "etl_user"
-    password_env: "DB_TARGET_PASSWORD"
-    properties:
-      batchsize: 1000
+  jdbc_url: "jdbc:postgresql://localhost:5432/etl_db"
+  driver: "org.postgresql.Driver"
+  user: "etl_user"
+  password: "${ETL_DB_PASSWORD}"
+  connection_pool:
+    min_connections: 2
+    max_connections: 10
+    connection_timeout: 30000
 
-# Logging Configuration
-logging:
-  version: 1
-  disable_existing_loggers: false
-  formatters:
-    standard:
-      format: "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
-      datefmt: "%Y-%m-%d %H:%M:%S"
-    json:
-      class: pythonjsonlogger.jsonlogger.JsonFormatter
-      format: "%(asctime)s %(name)s %(levelname)s %(message)s"
-  
-  handlers:
-    console:
-      class: logging.StreamHandler
-      level: INFO
-      formatter: standard
-      stream: ext://sys.stdout
-    
-    file:
-      class: logging.handlers.RotatingFileHandler
-      level: DEBUG
-      formatter: standard
-      filename: logs/etl_framework.log
-      maxBytes: 10485760  # 10MB
-      backupCount: 5
-    
-    error_file:
-      class: logging.handlers.RotatingFileHandler
-      level: ERROR
-      formatter: standard
-      filename: logs/etl_errors.log
-      maxBytes: 10485760
-      backupCount: 5
-  
-  loggers:
-    etl_framework:
-      level: DEBUG
-      handlers: [console, file, error_file]
-      propagate: false
-  
-  root:
-    level: INFO
-    handlers: [console, file]
+# Source Configuration
+source:
+  type: "database"  # database, staging, incremental
+  table_name: "source_data"
+  filter: ""
+  max_records: 0  # 0 = no limit
+  incremental:
+    enabled: false
+    timestamp_column: "changed_at"
+    last_run_tracking: true
 
-# ETL Configuration
-etl:
+# Target Configuration
+target:
+  type: "database"
+  table_name: "target_data"
+  mode: "upsert"  # insert, update, upsert
   batch_size: 1000
-  max_records: 0  # 0 means no limit
-  max_retries: 3
-  retry_delay: 5  # seconds
   enable_reconciliation: true
-  
-  extraction:
-    source_type: "DATABASE"
-    incremental_field: "changed_at"
-    staging_path: "staging/"
-  
-  transformation:
-    apply_business_rules: true
-    enable_enrichment: true
-    validation_mode: "strict"
-  
-  loading:
-    target_type: "DATABASE"
-    load_mode: "upsert"
-    partition_by: ["category"]
-    save_mode: "overwrite"
 
-# Data Quality Configuration
+# Transformation Rules
+transformation:
+  normalize_names: true
+  calculate_priority: true
+  apply_business_rules: true
+  enrichment_enabled: true
+  
+  category_multipliers:
+    PREMIUM: 1.5
+    STANDARD: 1.2
+    BASIC: 1.0
+    VIP: 2.0
+    TRIAL: 0.8
+
+  priority_thresholds:
+    high: 750
+    medium: 300
+    low: 0
+
+# Validation Settings
+validation:
+  enabled: true
+  fail_on_validation_error: true
+  checks:
+    - completeness
+    - uniqueness
+    - validity
+    - consistency
+
+# Data Quality
 data_quality:
   enabled: true
-  checks:
-    completeness: true
-    uniqueness: true
-    validity: true
-    consistency: true
-  
-  thresholds:
-    error_rate_warning: 5.0  # percentage
-    error_rate_critical: 10.0
-    null_rate_threshold: 5.0
-  
   profile_data: true
   detect_anomalies: true
+  quality_threshold: 95.0
 
-# Monitoring Configuration
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: "logs/etl_process.log"
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+  console_output: true
+
+# Monitoring
 monitoring:
   enabled: true
-  dashboard_days: 7
-  metrics_retention_days: 90
+  metrics_enabled: true
+  alert_on_failure: true
+  alert_email: "admin@example.com"
+  health_check_interval: 300  # seconds
   
-  alerts:
-    enabled: true
-    email_recipients: ["admin@example.com"]
-    smtp_host: "smtp.gmail.com"
-    smtp_port: 587
-    smtp_user_env: "SMTP_USER"
-    smtp_password_env: "SMTP_PASSWORD"
-  
-  health_check:
-    max_running_jobs: 5
+  thresholds:
     error_rate_warning: 20.0
     error_rate_critical: 50.0
+    max_running_jobs: 5
 
-# Business Rules Configuration
-business_rules:
-  categories:
-    PREMIUM:
-      value_multiplier: 1.5
-      min_priority: 1
-    STANDARD:
-      value_multiplier: 1.0
-      min_priority: 3
-    BASIC:
-      value_multiplier: 0.8
-      min_priority: 4
-    VIP:
-      value_multiplier: 2.0
-      min_priority: 1
-    TRIAL:
-      value_multiplier: 0.5
-      min_priority: 5
-  
-  status_thresholds:
-    high_value: 750
-    medium_value: 300
-  
-  priority_rules:
-    high_value_threshold: 1000
-    value_based_priority: true
+# Performance
+performance:
+  parallel_processing: true
+  max_workers: 4
+  partition_size: 10000
+  cache_enabled: true
+  cache_size: 100
 
-# Paths Configuration
-paths:
-  staging: "staging/"
-  archive: "archive/"
-  error: "error/"
-  logs: "logs/"
-  checkpoints: "checkpoints/"
+# Error Handling
+error_handling:
+  max_retries: 3
+  retry_delay: 5  # seconds
+  continue_on_error: false
+  error_threshold: 10  # max errors before stopping
 
-# Schedule Configuration
-schedule:
-  enabled: false
-  jobs:
-    daily_full_load:
-      type: "FULL"
-      cron: "0 2 * * *"  # 2 AM daily
-      enabled: true
-    
-    hourly_incremental:
-      type: "INCREMENTAL"
-      cron: "0 * * * *"  # Every hour
-      enabled: true
-    
-    weekly_reconciliation:
-      type: "RECONCILIATION"
-      cron: "0 18 * * 0"  # 6 PM every Sunday
-      enabled: false
+# Retention
+retention:
+  log_retention_days: 90
+  staging_retention_days: 7
+  archive_old_runs: true
+
+# Feature Flags
+features:
+  incremental_load: true
+  data_profiling: true
+  anomaly_detection: true
+  auto_recovery: true
+  test_mode: false
