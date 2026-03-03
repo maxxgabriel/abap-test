@@ -1,90 +1,79 @@
 # ETL Logger Configuration
 
-logger:
-  # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+# Logging Configuration
+logging:
+  # Default log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
   default_level: INFO
   
-  # Console output settings
+  # Console logging
   console:
     enabled: true
-    format: "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    level: INFO
+    format: "%(asctime)s - %(levelname)s - %(component)s - %(message)s"
     date_format: "%Y-%m-%d %H:%M:%S"
   
-  # In-memory storage settings
-  storage:
-    max_entries: 10000  # Maximum number of log entries to store
-    auto_clear: false    # Automatically clear old entries when limit reached
+  # File logging (optional)
+  file:
+    enabled: false
+    path: "/var/log/etl/etl.log"
+    level: DEBUG
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+    format: "%(asctime)s - %(levelname)s - %(component)s - %(message)s - %(pathname)s:%(lineno)d"
   
-  # Component-specific settings
-  components:
-    EXTRACTOR:
-      level: INFO
-      enabled: true
-    
-    TRANSFORMER:
-      level: INFO
-      enabled: true
-    
-    LOADER:
-      level: INFO
-      enabled: true
-    
-    ORCHESTRATOR:
-      level: INFO
-      enabled: true
-    
-    DATA_QUALITY:
-      level: INFO
-      enabled: true
-    
-    MONITOR:
-      level: WARNING
-      enabled: true
+  # In-memory storage
+  memory:
+    max_entries: 10000  # Maximum log entries to keep in memory
+    auto_cleanup: true  # Automatically remove old entries when limit reached
 
-# ETL Process Configuration
-etl:
-  batch_size: 1000
-  max_retries: 3
-  timeout_seconds: 3600
-  
-  # Source configuration
-  source:
-    type: DATABASE
-    format: parquet
-    
-  # Target configuration
-  target:
-    type: DATABASE
-    format: parquet
-    mode: overwrite
+# Component Names (for consistent naming)
+components:
+  extractor: EXTRACTOR
+  transformer: TRANSFORMER
+  loader: LOADER
+  orchestrator: ORCHESTRATOR
+  data_quality: DATA_QUALITY
+  monitor: MONITOR
+  logger: LOGGER
 
-# Spark Configuration
-spark:
-  app_name: ETL_Logger_Application
-  master: local[*]
-  config:
-    spark.sql.shuffle.partitions: 200
-    spark.executor.memory: 4g
-    spark.driver.memory: 2g
-    spark.sql.adaptive.enabled: true
+# Log Retention
+retention:
+  days: 90  # Number of days to retain logs
+  cleanup_schedule: "0 2 * * *"  # Cron expression for cleanup (2 AM daily)
 
-# Monitoring and Alerts
+# Alert Configuration
+alerts:
+  enabled: true
+  error_threshold: 10  # Number of errors before triggering alert
+  warning_threshold: 50  # Number of warnings before triggering alert
+  email:
+    enabled: false
+    recipients:
+      - admin@example.com
+    smtp_server: smtp.example.com
+    smtp_port: 587
+
+# Performance Monitoring
 monitoring:
   enabled: true
-  alert_on_error: true
-  alert_threshold: 5  # Number of errors before alerting
+  log_performance_metrics: true
+  track_memory_usage: true
   
-  health_check:
-    enabled: true
-    interval_seconds: 300
+# Export Configuration
+export:
+  # Export logs to external storage
+  enabled: false
+  formats:
+    - json
+    - csv
+    - parquet
+  destination:
+    type: s3  # s3, hdfs, local
+    path: s3://etl-logs/
+    partition_by: date
 
-# Data Quality Rules
-data_quality:
-  enabled: true
-  checks:
-    - completeness
-    - uniqueness
-    - validity
-    - consistency
-  
-  failure_action: warn  # Options: warn, fail, ignore
+# Debug Mode
+debug:
+  enabled: false
+  verbose_logging: false
+  log_stack_traces: true
