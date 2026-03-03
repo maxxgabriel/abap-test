@@ -1,88 +1,197 @@
-# PySpark ETL Pipeline Configuration
+# ETL Configuration File
+# Generated configuration for test data generation and ETL orchestration
 
-# Spark Configuration
+app:
+  name: "ETL Data Generator"
+  version: "1.0.0"
+  environment: "development"
+
 spark:
-  app_name: "ETL_Transformation_Pipeline"
+  app_name: "ETL_Pipeline"
   master: "local[*]"
-  log_level: "WARN"
   config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
-    spark.sql.files.maxPartitionBytes: "134217728"  # 128MB
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.default.parallelism: 8
 
-# Source Configuration
-source:
-  type: "database"  # database, staging, incremental
-  format: "jdbc"
-  jdbc:
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    table: "source_data"
-    user: "etl_user"
-    password: "etl_password"
-  filter: null
-  max_records: 0  # 0 means no limit
+data_generation:
+  default_records: 100
+  categories:
+    - PREMIUM
+    - STANDARD
+    - BASIC
+    - VIP
+    - TRIAL
+  statuses:
+    - ACTIVE
+    - INACTIVE
+    - PENDING
+    - SUSPENDED
+  source_systems:
+    - SAP_ERP
+    - SAP_S4
+    - LEGACY_DB
+    - CLOUD_APP
+  value_range:
+    min: 50
+    max: 1000
   
-# Transformation Configuration
-transformation:
+etl_config:
   batch_size: 1000
-  rules:
-    category_multipliers:
-      PREMIUM: 1.5
-      STANDARD: 1.0
-      BASIC: 0.8
-      VIP: 2.0
-      TRIAL: 0.5
-    priority_thresholds:
-      high: 1000
-      medium: 750
-      low: 300
-    status_mapping:
-      high_value: 750
-      medium_value: 300
+  max_retries: 3
+  retry_delay_seconds: 5
+  timeout_seconds: 3600
+  
+  extraction:
+    source_type: "DATABASE"
+    incremental_lookback_hours: 24
+    max_records_per_batch: 10000
+    filter_inactive: true
+  
+  transformation:
+    apply_business_rules: true
+    enrich_data: true
+    validate_data: true
+    premium_multiplier: 1.5
+    standard_multiplier: 1.2
+    basic_multiplier: 1.0
+  
+  loading:
+    target_type: "DATABASE"
+    mode: "UPSERT"
+    enable_reconciliation: true
+    commit_on_success: true
+    rollback_on_error: true
 
-# Target Configuration
-target:
-  type: "database"
-  format: "jdbc"
-  jdbc:
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    driver: "org.postgresql.Driver"
-    table: "target_data"
-    user: "etl_user"
-    password: "etl_password"
-  mode: "upsert"  # insert, update, upsert
-  batch_size: 1000
+schedules:
+  daily_full_load:
+    schedule_id: "SCHED001"
+    name: "Daily Full Load"
+    type: "FULL"
+    frequency: "DAILY"
+    start_time: "02:00:00"
+    enabled: true
+  
+  hourly_incremental:
+    schedule_id: "SCHED002"
+    name: "Hourly Incremental"
+    type: "INCREMENTAL"
+    frequency: "HOURLY"
+    start_time: "00:00:00"
+    enabled: true
+  
+  weekly_reconciliation:
+    schedule_id: "SCHED003"
+    name: "Weekly Reconciliation"
+    type: "RECONCILIATION"
+    frequency: "WEEKLY"
+    start_time: "18:00:00"
+    enabled: false
 
-# Data Quality Configuration
-quality:
-  enabled: true
+data_quality:
+  enable_checks: true
+  validation_threshold: 95
   checks:
-    completeness: true
-    uniqueness: true
-    validity: true
-    consistency: true
-  thresholds:
-    error_rate_warning: 0.05  # 5%
-    error_rate_critical: 0.10  # 10%
+    completeness:
+      enabled: true
+      required_fields:
+        - id
+        - name
+        - value
+    uniqueness:
+      enabled: true
+      check_fields:
+        - id
+    validity:
+      enabled: true
+      rules:
+        value_positive: true
+        priority_range: [1, 5]
+        category_not_empty: true
+    consistency:
+      enabled: true
+      cross_field_validation: true
 
-# Logging Configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/etl_pipeline.log"
-  console: true
-
-# Monitoring Configuration
 monitoring:
-  enabled: true
-  metrics_enabled: true
-  health_check_interval: 60  # seconds
+  enable_logging: true
+  log_level: "INFO"
+  log_retention_days: 90
+  enable_alerts: true
+  alert_email: "admin@example.com"
+  health_check_interval_minutes: 5
+  
+  metrics:
+    track_performance: true
+    track_data_quality: true
+    track_errors: true
+    dashboard_refresh_seconds: 30
 
-# Performance Configuration
-performance:
-  cache_intermediate: true
-  repartition_enabled: true
-  repartition_columns: ["category"]
-  num_partitions: 10
+paths:
+  data:
+    input: "data/input"
+    output: "data/output"
+    staging: "data/staging"
+    archive: "data/archive"
+    generated: "data/generated"
+  
+  logs:
+    application: "logs/application"
+    audit: "logs/audit"
+    errors: "logs/errors"
+
+database:
+  source:
+    type: "parquet"
+    path: "data/generated/source_data"
+  
+  target:
+    type: "parquet"
+    path: "data/generated/target_data"
+  
+  config:
+    type: "parquet"
+    path: "data/generated/config_data"
+  
+  schedules:
+    type: "parquet"
+    path: "data/generated/schedule_data"
+
+priorities:
+  rules:
+    high_value_threshold: 750
+    medium_value_threshold: 300
+    premium_category_boost: 1
+  
+  mappings:
+    1: "CRITICAL"
+    2: "HIGH"
+    3: "MEDIUM"
+    4: "LOW"
+    5: "NORMAL"
+
+categories:
+  premium:
+    multiplier: 1.5
+    priority_boost: true
+    status_override: "HIGH_VALUE"
+  
+  standard:
+    multiplier: 1.2
+    priority_boost: false
+    status_override: null
+  
+  basic:
+    multiplier: 1.0
+    priority_boost: false
+    status_override: null
+  
+  vip:
+    multiplier: 2.0
+    priority_boost: true
+    status_override: "VIP_TIER"
+  
+  trial:
+    multiplier: 0.8
+    priority_boost: false
+    status_override: "TRIAL_PERIOD"
