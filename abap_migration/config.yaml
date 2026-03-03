@@ -1,72 +1,20 @@
-# ETL Transformation Module Configuration
+# ETL Transformation Configuration
 
-# Application settings
-application:
-  name: "ETL Transformation Module"
-  version: "1.0.0"
-  environment: "production"
-
-# Spark configuration
-spark:
-  app_name: "ETL_Transform_Pipeline"
-  master: "local[*]"
-  config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
-    spark.sql.shuffle.partitions: "200"
-    spark.default.parallelism: "200"
-
-# ETL configuration
-etl:
-  batch_size: 1000
-  max_records: 0  # 0 means no limit
-  source_type: "DATABASE"
-  target_type: "DATABASE"
-  enable_validation: true
-  enable_reconciliation: true
-  
-# Transformation rules
-transformation:
-  # Category multipliers
-  category_multipliers:
-    PREMIUM: 1.5
-    VIP: 2.0
-    STANDARD: 1.2
-    BASIC: 1.0
-    TRIAL: 0.8
-  
-  # Premium enrichment multiplier
-  premium_multiplier: 1.2
-  
-  # Priority thresholds
-  priority_rules:
-    threshold_p1: 1000
-    threshold_p2: 750
-    threshold_p3: 500
-    threshold_p4: 250
-    default_priority: 5
-  
-  # Status thresholds
-  status_rules:
-    high_value_threshold: 750
-    medium_value_threshold: 300
-
-# Validation rules
-validation:
+# Validation Rules
+validation_rules:
+  min_value: 0
+  max_value: 1000000
   required_fields:
     - id
     - name
     - value
-  
-  value_constraints:
-    min_value: 0
-    max_value: 999999.99
-  
-  priority_range:
-    min: 1
-    max: 5
-  
+  valid_statuses:
+    - INVALID
+    - HIGH_VALUE
+    - MEDIUM_VALUE
+    - LOW_VALUE
+    - ACTIVE
+    - TRANSFORMED
   valid_categories:
     - PREMIUM
     - VIP
@@ -74,65 +22,62 @@ validation:
     - BASIC
     - TRIAL
     - UNCATEGORIZED
-  
-  valid_statuses:
-    - INVALID
-    - HIGH_VALUE
-    - MEDIUM_VALUE
-    - LOW_VALUE
-  
-  # Fail on validation errors
-  fail_on_validation_error: true
-  
-  # Maximum allowed error percentage
-  max_error_percentage: 5.0
 
-# Data quality checks
+# Business Rules
+business_rules:
+  premium_threshold: 500
+  high_value_threshold: 750
+  medium_value_threshold: 300
+  low_value_threshold: 100
+  enrichment:
+    apply_premium_bonus: true
+    premium_bonus_rate: 1.2
+
+# Category Mappings
+category_mappings:
+  value_multipliers:
+    PREMIUM: 1.5
+    VIP: 1.8
+    STANDARD: 1.2
+    BASIC: 1.0
+    TRIAL: 0.9
+  normalization:
+    Premium: PREMIUM
+    premium: PREMIUM
+    Vip: VIP
+    vip: VIP
+    Standard: STANDARD
+    standard: STANDARD
+
+# Priority Rules
+priority_rules:
+  priority_1_threshold: 1000  # Highest priority
+  priority_2_threshold: 750   # High priority
+  priority_3_threshold: 300   # Medium priority
+  priority_4_threshold: 100   # Low priority
+  # Below 100 = Priority 5 (Lowest)
+
+# Transformation Settings
+transformation:
+  name_normalization:
+    trim_whitespace: true
+    convert_to_uppercase: true
+    remove_special_chars: false
+  value_rounding:
+    decimal_places: 2
+  
+# Data Quality Settings
 data_quality:
   enable_completeness_check: true
   enable_uniqueness_check: true
   enable_validity_check: true
   enable_consistency_check: true
-  enable_anomaly_detection: true
+  duplicate_check_fields:
+    - id
+  null_tolerance_percent: 0
   
-  # Completeness threshold (% of non-null values required)
-  completeness_threshold: 95.0
-  
-  # Uniqueness threshold (% of unique IDs required)
-  uniqueness_threshold: 100.0
-
-# Logging configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/etl_transform.log"
-  console_output: true
-  
-# Performance settings
+# Performance Settings
 performance:
   cache_intermediate_results: true
-  persist_level: "MEMORY_AND_DISK"
-  checkpoint_interval: 10
-  
-# Metadata
-metadata:
-  processed_by: "pyspark_etl"
-  add_processing_timestamp: true
-  add_run_id: true
-
-# Error handling
-error_handling:
-  max_retries: 3
-  retry_delay_seconds: 5
-  continue_on_error: false
-  save_error_records: true
-  error_output_path: "output/errors"
-
-# Output settings
-output:
-  format: "parquet"
-  mode: "overwrite"
-  partition_by:
-    - category
-    - priority
-  compression: "snappy"
+  repartition_after_transform: true
+  target_partitions: 200
