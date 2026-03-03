@@ -1,100 +1,135 @@
 """
-ETL Orchestrator Module
-Coordinates the complete ETL workflow
+PySpark ETL Orchestrator
+Coordinates extraction, transformation, and loading
 Migrated from zcl_etl_orchestrator.abap
 """
 
 from pyspark.sql import SparkSession
-from datetime import datetime
 from typing import Optional
 import logging
+from datetime import datetime
+from dataclasses import dataclass
 
 from src.extract import ETLExtractor
 from src.transform import ETLTransformer
 from src.load import ETLLoader
 
 
+@dataclass
 class ETLResult:
-    """Container for ETL execution results"""
-    def __init__(self):
-        self.run_id: str = ""
-        self.status: str = "RUNNING"
-        self.start_time: Optional[datetime] = None
-        self.end_time: Optional[datetime] = None
-        self.duration: int = 0
-        self.records_extracted: int = 0
-        self.records_transformed: int = 0
-        self.records_loaded: int = 0
-        self.records_failed: int = 0
-        self.error_count: int = 0
-        self.warning_count: int = 0
+    """Result of ETL execution."""
+    run_id: str
+    status: str
+    start_time: datetime
+    end_time: Optional[datetime]
+    duration: Optional[int]
+    records_extracted: int
+    records_transformed: int
+    records_loaded: int
+    records_failed: int
+    error_count: int
+    warning_count: int
 
 
 class ETLOrchestrator:
-    """Orchestrates the complete ETL workflow"""
+    """Orchestrate the complete ETL process."""
     
-    def __init__(self, spark: SparkSession, run_type: str = "MANUAL"):
+    def __init__(self, run_type: str = "MANUAL", spark: SparkSession = None):
         """
-        Initialize orchestrator
+        Initialize ETL Orchestrator.
         
         Args:
-            spark: SparkSession instance
             run_type: Type of run (MANUAL, SCHEDULED, etc.)
+            spark: SparkSession instance
         """
-        self.spark = spark
         self.run_type = run_type
         self.run_id = self._generate_run_id()
+        self.spark = spark or SparkSession.builder.getOrCreate()
         self.logger = logging.getLogger(__name__)
+        
+    def _generate_run_id(self) -> str:
+        """Generate unique run identifier."""
+        return f"ETL_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    def execute_etl(self, source_type: str = "DATABASE", target_type: str = "DATABASE",
-                    filter_value: Optional[str] = None, batch_size: int = 1000,
-                    max_records: int = 0) -> ETLResult:
+    def execute_etl(
+        self,
+        source_type: str = "DATABASE",
+        target_type: str = "DATABASE",
+        filter_condition: Optional[str] = None,
+        batch_size: int = 1000,
+        max_records: int = 0
+    ) -> ETLResult:
         """
-        Execute complete ETL workflow
+        Execute complete ETL process.
         
         Args:
-            source_type: Source system type
-            target_type: Target system type
-            filter_value: Optional filter criteria
+            source_type: Type of data source
+            target_type: Type of data target
+            filter_condition: Optional filter for extraction
             batch_size: Batch size for loading
-            max_records: Maximum records to process
+            max_records: Maximum records to process (0 = no limit)
             
         Returns:
             ETLResult with execution statistics
         """
-        result = ETLResult()
-        result.run_id = self.run_id
-        result.start_time = datetime.now()
+        start_time = datetime.now()
+        
+        result = ETLResult(
+            run_id=self.run_id,
+            status="RUNNING",
+            start_time=start_time,
+            end_time=None,
+            duration=None,
+            records_extracted=0,
+            records_transformed=0,
+            records_loaded=0,
+            records_failed=0,
+            error_count=0,
+            warning_count=0
+        )
         
         self.logger.info(f"ETL execution started - Run ID: {self.run_id}")
         
         try:
             # Step 1: Extract
-            extractor = ETLExtractor(self.spark, source_type, self.run_id)
-            source_df = extractor.extract_data(filter_value, max_records)
+            extractor = ETLExtractor(source_type=source_type, run_id=self.run_id, spark=self.spark)
+            source_df = extractor.extract_data(
+                filter_condition=filter_condition,
+                max_records=max_records
+            )
+            
             result.records_extracted = source_df.count()
             
             if result.records_extracted == 0:
                 self.logger.warning("No data extracted - ETL process stopping")
                 result.status = "NO_DATA"
+                result.end_time = datetime.now()
                 return result
             
             # Step 2: Transform
-            transformer = ETLTransformer(self.spark, self.run_id)
+            transformer = ETLTransformer(run_id=self.run_id, spark=self.spark)
             transformed_df = transformer.transform_data(source_df)
             
             # Validate
             is_valid, validation_errors = transformer.validate_data(transformed_df)
+            
             if not is_valid:
                 self.logger.error(f"Validation failed - {len(validation_errors)} errors")
                 result.status = "VALIDATION_FAILED"
                 result.error_count = len(validation_errors)
+                result.end_time = datetime.now()
                 return result
             
             result.records_transformed = transformed_df.count()
             
             # Step 3: Load
-            loader = ETLLoader(self.spark, target_type, batch_size, self.run_id)
+            loader = ETLLoader(
+                target_type=target_type,
+                batch_size=batch_size,
+                run_id=self.run_id,
+                spark=self.spark
+            )
+            
             load_result = loader.load_data(transformed_df, mode="UPSERT")
             
             result.records_loaded = load_result.success_count
@@ -112,7 +147,6 @@ class ETLOrchestrator:
             result.end_time = datetime.now()
             result.duration = int((result.end_time - result.start_time).total_seconds())
             
-            # Log completion
             self._log_run_completion(result)
             
             self.logger.info(f"ETL execution completed - Status: {result.status}")
@@ -123,52 +157,35 @@ class ETLOrchestrator:
             result.end_time = datetime.now()
             result.duration = int((result.end_time - result.start_time).total_seconds())
             self._log_run_completion(result)
-            raise
         
         return result
     
-    def _generate_run_id(self) -> str:
-        """Generate unique run ID"""
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        return f"RUN_{timestamp}"
-    
     def _log_run_completion(self, result: ETLResult):
-        """Log run completion to database"""
+        """Log ETL run completion to database."""
         try:
-            # Create log DataFrame
-            log_data = [(
-                result.run_id,
-                result.status,
-                result.start_time,
-                result.end_time,
-                result.duration,
-                result.records_extracted,
-                result.records_transformed,
-                result.records_loaded,
-                result.records_failed,
-                result.error_count
-            )]
+            log_data = [{
+                "run_id": result.run_id,
+                "run_type": self.run_type,
+                "status": result.status,
+                "start_time": result.start_time,
+                "end_time": result.end_time,
+                "duration": result.duration,
+                "records_extracted": result.records_extracted,
+                "records_transformed": result.records_transformed,
+                "records_loaded": result.records_loaded,
+                "records_failed": result.records_failed,
+                "error_count": result.error_count,
+            }]
             
-            columns = [
-                "run_id", "status", "start_time", "end_time", "duration",
-                "records_extracted", "records_transformed", "records_loaded",
-                "records_failed", "error_count"
-            ]
+            log_df = self.spark.createDataFrame(log_data)
             
-            log_df = self.spark.createDataFrame(log_data, columns)
-            
-            # Write to log table
             log_df.write \
                 .format("jdbc") \
-                .option("url", self._get_jdbc_url()) \
+                .option("url", "jdbc:postgresql://localhost:5432/etl_db") \
                 .option("dbtable", "zetl_run_log") \
                 .option("driver", "org.postgresql.Driver") \
                 .mode("append") \
                 .save()
-            
+                
         except Exception as e:
             self.logger.error(f"Failed to log run completion: {str(e)}")
-    
-    def _get_jdbc_url(self) -> str:
-        """Get JDBC connection URL"""
-        return "jdbc:postgresql://localhost:5432/etl_db"
