@@ -1,100 +1,120 @@
-# ETL Test Framework Configuration
+# Data Quality Configuration
 
-# Spark Configuration
-spark:
-  app_name: "etl_test_framework"
-  master: "local[2]"
-  configs:
-    spark.sql.shuffle.partitions: 2
-    spark.default.parallelism: 2
-    spark.ui.enabled: false
-    spark.driver.memory: "1g"
-    spark.sql.adaptive.enabled: true
-
-# Test Data Generation
-test_data:
-  default_record_count: 100
-  include_nulls: false
-  include_duplicates: false
-  include_invalid: false
-  categories:
-    - PREMIUM
-    - STANDARD
-    - BASIC
-    - VIP
-    - TRIAL
-  value_range:
-    min: 50
-    max: 1000
-
-# Test Execution
-test_execution:
-  batch_size: 100
-  max_retries: 3
-  timeout_seconds: 300
-  enable_parallel: false
-
-# Test Data Storage
-storage:
-  format: "parquet"
-  temp_dir: "/tmp/spark_test"
-  cleanup_on_exit: true
-
-# Logging
-logging:
-  level: "INFO"
-  log_to_file: false
-  log_dir: "logs/test"
-
-# Assertions
-assertions:
-  strict_schema_validation: true
-  enable_row_comparison: true
-  compare_decimals_precision: 2
-
-# Mock Data Sources
-mock_sources:
-  database:
-    enabled: true
-    auto_register: true
+quality:
+  # Quality check thresholds
+  thresholds:
+    completeness_min: 0.95  # 95% completeness required
+    uniqueness_min: 0.99    # 99% unique IDs required
+    validity_min: 0.98      # 98% valid values required
+    consistency_min: 0.97   # 97% consistent data required
+    acceptable_loss_rate: 0.05  # 5% record loss acceptable
   
-  staging:
+  # Profiling settings
+  profiling:
     enabled: true
-    auto_register: true
-
-# Quality Checks
-quality_checks:
-  completeness:
+    sample_size: 10000  # For large datasets, sample for profiling
+    calculate_std_dev: true
+    detect_outliers: true
+    outlier_std_threshold: 3  # Number of std deviations for outlier detection
+  
+  # Anomaly detection settings
+  anomaly_detection:
     enabled: true
-    critical_fields:
+    check_patterns:
+      - duplicate_names
+      - suspicious_ids
+      - outlier_values
+      - category_distribution
+    
+    category_dominance_threshold: 0.80  # Flag if one category > 80%
+    
+  # Validation rules
+  validation_rules:
+    required_fields:
       - id
       - name
       - value
-  
-  uniqueness:
-    enabled: true
-    key_fields:
-      - id
-  
-  validity:
-    enabled: true
-    rules:
-      - field: value
+      - category
+      - status
+    
+    value_ranges:
+      value:
         min: 0
-      - field: priority
+        max: 999999
+      priority:
         min: 1
         max: 5
+      transformed_value:
+        min: 0
+        max: 999999
+    
+    valid_statuses:
+      - ACTIVE
+      - INACTIVE
+      - PENDING
+      - TRANSFORMED
+      - HIGH_VALUE
+      - MEDIUM_VALUE
+      - LOW_VALUE
+      - NORMAL
+      - INVALID
+    
+    valid_categories:
+      - PREMIUM
+      - STANDARD
+      - BASIC
+      - VIP
+      - TRIAL
+      - TEST
+      - UNCATEGORIZED
+  
+  # Record count validation
+  count_validation:
+    enabled: true
+    compare_stages:
+      - extract_to_transform
+      - transform_to_load
+    max_loss_rate: 0.05  # 5%
+    alert_on_mismatch: true
 
-# Test Scenarios
-scenarios:
-  unit_test:
-    record_count: 10
-    batch_size: 5
+# Reporting settings
+reporting:
+  generate_report: true
+  report_format: json
+  include_profile: true
+  include_anomalies: true
+  include_samples: false
+  sample_size: 10
   
-  integration_test:
-    record_count: 100
-    batch_size: 50
+  export:
+    enabled: true
+    path: "quality_reports/"
+    file_pattern: "quality_report_{run_id}_{timestamp}.json"
+
+# Logging
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   
-  load_test:
-    record_count: 10000
-    batch_size: 1000
+  handlers:
+    console:
+      enabled: true
+      level: INFO
+    
+    file:
+      enabled: true
+      level: DEBUG
+      path: "logs/"
+      file_pattern: "quality_{run_id}.log"
+
+# Spark configuration
+spark:
+  app_name: "ETL Data Quality"
+  master: "local[*]"
+  
+  config:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.shuffle.partitions: "200"
+    spark.executor.memory: "2g"
+    spark.driver.memory: "1g"
