@@ -1,16 +1,22 @@
 """
-ETL Logger Module
-Centralized logging with multiple levels and component tracking.
+ETL Logger - Centralized logging functionality
 """
-from typing import List, Optional
-from dataclasses import dataclass
+from typing import Optional
 from datetime import datetime
-import logging
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class LogLevel(Enum):
+    """Log levels"""
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
 
 
 @dataclass
 class LogEntry:
-    """Single log entry."""
+    """Single log entry"""
     timestamp: datetime
     level: str
     component: str
@@ -19,66 +25,47 @@ class LogEntry:
 
 
 class ETLLogger:
-    """Singleton logger for ETL operations."""
-    
-    _instance = None
+    """Centralized logger for ETL processes"""
     
     def __init__(self):
-        """Initialize logger."""
-        self.logs: List[LogEntry] = []
-        self._setup_logging()
+        self.logs: list[LogEntry] = []
     
-    @classmethod
-    def get_instance(cls) -> "ETLLogger":
-        """Get singleton instance."""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
+    def log_info(self, component: str, message: str, details: Optional[str] = None):
+        """Log info message"""
+        self._add_log(LogLevel.INFO, component, message, details)
     
-    def _setup_logging(self):
-        """Setup Python logging."""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.python_logger = logging.getLogger("ETL")
+    def log_warning(self, component: str, message: str, details: Optional[str] = None):
+        """Log warning message"""
+        self._add_log(LogLevel.WARNING, component, message, details)
     
-    def log_info(self, component: str, message: str, details: str = None):
-        """Log info message."""
-        self._add_log_entry("INFO", component, message, details)
-        self.python_logger.info(f"[{component}] {message}")
+    def log_error(self, component: str, message: str, details: Optional[str] = None):
+        """Log error message"""
+        self._add_log(LogLevel.ERROR, component, message, details)
     
-    def log_error(self, component: str, message: str, details: str = None):
-        """Log error message."""
-        self._add_log_entry("ERROR", component, message, details)
-        self.python_logger.error(f"[{component}] {message} - {details}")
-    
-    def log_warning(self, component: str, message: str, details: str = None):
-        """Log warning message."""
-        self._add_log_entry("WARNING", component, message, details)
-        self.python_logger.warning(f"[{component}] {message}")
-    
-    def _add_log_entry(
+    def _add_log(
         self,
-        level: str,
+        level: LogLevel,
         component: str,
         message: str,
-        details: Optional[str] = None
+        details: Optional[str]
     ):
-        """Add log entry to internal log list."""
+        """Add log entry"""
         entry = LogEntry(
             timestamp=datetime.now(),
-            level=level,
+            level=level.value,
             component=component,
             message=message,
             details=details
         )
         self.logs.append(entry)
+        print(f"[{entry.timestamp}] {entry.level}: {entry.component} - {entry.message}")
+        if details:
+            print(f"  Details: {details}")
     
-    def get_logs(self) -> List[LogEntry]:
-        """Get all log entries."""
-        return self.logs.copy()
+    def get_logs(self) -> list[LogEntry]:
+        """Get all logs"""
+        return self.logs
     
     def clear_logs(self):
-        """Clear all log entries."""
+        """Clear all logs"""
         self.logs.clear()
