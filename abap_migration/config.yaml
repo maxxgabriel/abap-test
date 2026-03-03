@@ -1,83 +1,52 @@
-# ETL Transformation Configuration
+# ETL Loading Configuration
 
-# Validation Rules
-validation_rules:
-  min_value: 0
-  max_value: 1000000
-  required_fields:
-    - id
-    - name
-    - value
-  valid_statuses:
-    - INVALID
-    - HIGH_VALUE
-    - MEDIUM_VALUE
-    - LOW_VALUE
-    - ACTIVE
-    - TRANSFORMED
-  valid_categories:
-    - PREMIUM
-    - VIP
-    - STANDARD
-    - BASIC
-    - TRIAL
-    - UNCATEGORIZED
+# Spark Configuration
+spark:
+  app_name: "ETL_Loading_Module"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
 
-# Business Rules
-business_rules:
-  premium_threshold: 500
-  high_value_threshold: 750
-  medium_value_threshold: 300
-  low_value_threshold: 100
-  enrichment:
-    apply_premium_bonus: true
-    premium_bonus_rate: 1.2
-
-# Category Mappings
-category_mappings:
-  value_multipliers:
-    PREMIUM: 1.5
-    VIP: 1.8
-    STANDARD: 1.2
-    BASIC: 1.0
-    TRIAL: 0.9
-  normalization:
-    Premium: PREMIUM
-    premium: PREMIUM
-    Vip: VIP
-    vip: VIP
-    Standard: STANDARD
-    standard: STANDARD
-
-# Priority Rules
-priority_rules:
-  priority_1_threshold: 1000  # Highest priority
-  priority_2_threshold: 750   # High priority
-  priority_3_threshold: 300   # Medium priority
-  priority_4_threshold: 100   # Low priority
-  # Below 100 = Priority 5 (Lowest)
-
-# Transformation Settings
-transformation:
-  name_normalization:
-    trim_whitespace: true
-    convert_to_uppercase: true
-    remove_special_chars: false
-  value_rounding:
-    decimal_places: 2
+# Loading Configuration
+loading:
+  batch_size: 1000
+  target_format: "parquet"
+  target_table: "etl_target_data"
+  target_path: "/tmp/etl_target"
+  enable_reconciliation: true
   
-# Data Quality Settings
-data_quality:
-  enable_completeness_check: true
-  enable_uniqueness_check: true
-  enable_validity_check: true
-  enable_consistency_check: true
-  duplicate_check_fields:
-    - id
-  null_tolerance_percent: 0
-  
-# Performance Settings
+# Mode Configuration
+modes:
+  default: "UPSERT"
+  available:
+    - "INSERT"
+    - "UPDATE"
+    - "UPSERT"
+
+# Performance Tuning
 performance:
-  cache_intermediate_results: true
-  repartition_after_transform: true
-  target_partitions: 200
+  max_partitions: 50
+  min_partition_size_mb: 128
+  compression: "snappy"
+  write_mode: "append"
+
+# Error Handling
+error_handling:
+  max_retries: 3
+  retry_delay_seconds: 5
+  log_errors: true
+  continue_on_error: false
+
+# Reconciliation
+reconciliation:
+  enabled: true
+  tolerance_percentage: 0.01
+  sample_size: 1000
+
+# Monitoring
+monitoring:
+  log_level: "INFO"
+  metrics_enabled: true
+  alert_on_failure: true
