@@ -1,559 +1,519 @@
 """
-Test framework utilities for ETL test isolation and setup.
-Provides reusable fixtures, data generators, and assertion patterns.
+Test Framework Utilities for ETL Testing
+Provides reusable fixtures, assertions, and isolation helpers
 """
-from typing import List, Dict, Any, Optional, Callable
-from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
-import tempfile
-import shutil
-from pathlib import Path
 
+from typing import List, Dict, Any, Optional, Callable
+from datetime import datetime, timedelta
+from decimal import Decimal
+from contextlib import contextmanager
+import pytest
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import (
     StructType, StructField, StringType, DecimalType,
-    IntegerType, TimestampType, BooleanType
+    IntegerType, TimestampType
 )
-import pytest
 
 
-@dataclass
-class TestDataConfig:
-    """Configuration for generating test data."""
-    num_records: int = 100
-    include_nulls: bool = False
-    include_duplicates: bool = False
-    include_invalid: bool = False
-    categories: List[str] = None
-    value_range: tuple = (50, 1000)
-
-
-@dataclass
-class SparkTestContext:
-    """Context for Spark testing with isolated resources."""
-    spark: SparkSession
-    temp_dir: Path
-    warehouse_dir: Path
-    checkpoint_dir: Path
-    
-    def cleanup(self):
-        """Clean up temporary directories."""
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-
-
-class SparkTestSessionBuilder:
-    """Builder for creating isolated Spark test sessions."""
+class TestDataFactory:
+    """Factory for creating test data with various patterns"""
     
     @staticmethod
-    def create_test_session(
-        app_name: str = "test",
-        warehouse_location: Optional[str] = None,
-        config_overrides: Optional[Dict[str, str]] = None
-    ) -> SparkTestContext:
-        """
-        Create an isolated Spark session for testing.
+    def create_source_records(
+        count: int = 10,
+        id_prefix: str = "TEST",
+        category: str = "STANDARD",
+        status: str = "ACTIVE",
+        base_value: Decimal = Decimal("100.00")
+    ) -> List[Dict[str, Any]]:
+        """Create source data records for testing"""
+        records = []
+        base_time = datetime.now()
         
-        Args:
-            app_name: Application name for the session
-            warehouse_location: Optional warehouse location
-            config_overrides: Additional Spark configurations
-            
-        Returns:
-            SparkTestContext with session and temp directories
-        """
-        temp_dir = Path(tempfile.mkdtemp(prefix=f"spark_test_{app_name}_"))
-        warehouse_dir = temp_dir / "warehouse"
-        checkpoint_dir = temp_dir / "checkpoint"
+        for i in range(count):
+            record_id = f"{id_prefix}{str(i+1).zfill(6)}"
+            records.append({
+                "id": record_id,
+                "name": f"Product {i+1}",
+                "value": base_value + Decimal(i * 10),
+                "status": status,
+                "category": category,
+                "source_system": "TEST_SYSTEM",
+                "created_at": base_time - timedelta(days=i),
+                "created_by": "TEST_USER",
+                "changed_at": base_time,
+                "changed_by": "TEST_USER"
+            })
         
-        warehouse_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
-        builder = (
-            SparkSession.builder
-            .appName(app_name)
-            .master("local[2]")
-            .config("spark.sql.warehouse.dir", str(warehouse_dir))
-            .config("spark.sql.streaming.checkpointLocation", str(checkpoint_dir))
-            .config("spark.ui.enabled", "false")
-            .config("spark.sql.shuffle.partitions", "2")
-            .config("spark.default.parallelism", "2")
-            .config("spark.sql.adaptive.enabled", "true")
-            .config("spark.driver.memory", "1g")
-        )
-        
-        if config_overrides:
-            for key, value in config_overrides.items():
-                builder = builder.config(key, value)
-        
-        spark = builder.getOrCreate()
-        spark.sparkContext.setLogLevel("ERROR")
-        
-        return SparkTestContext(
-            spark=spark,
-            temp_dir=temp_dir,
-            warehouse_dir=warehouse_dir,
-            checkpoint_dir=checkpoint_dir
-        )
-
-
-class TestDataGenerator:
-    """Generate test data with various characteristics."""
+        return records
     
     @staticmethod
-    def get_source_schema() -> StructType:
-        """Get the schema for source test data."""
+    def create_transformed_records(
+        count: int = 10,
+        run_id: str = "TESTRUN001",
+        priority: int = 3
+    ) -> List[Dict[str, Any]]:
+        """Create transformed data records for testing"""
+        records = []
+        base_time = datetime.now()
+        
+        for i in range(count):
+            record_id = f"TEST{str(i+1).zfill(6)}"
+            value = Decimal(100 + i * 10)
+            records.append({
+                "id": record_id,
+                "name": f"PRODUCT {i+1}",
+                "value": value,
+                "transformed_value": value * Decimal("1.5"),
+                "status": "TRANSFORMED",
+                "category": "STANDARD",
+                "priority": priority,
+                "etl_run_id": run_id,
+                "processed_at": base_time,
+                "processed_by": "TEST_USER"
+            })
+        
+        return records
+    
+    @staticmethod
+    def create_invalid_records(count: int = 5) -> List[Dict[str, Any]]:
+        """Create invalid records for validation testing"""
+        return [
+            {"id": None, "name": "Invalid1", "value": Decimal("100")},
+            {"id": "INV001", "name": None, "value": Decimal("200")},
+            {"id": "INV002", "name": "Invalid2", "value": None},
+            {"id": "INV003", "name": "Invalid3", "value": Decimal("-100")},
+            {"id": "", "name": "", "value": Decimal("0")}
+        ][:count]
+
+
+class TestSchemas:
+    """Centralized schema definitions for testing"""
+    
+    @staticmethod
+    def source_schema() -> StructType:
+        """Schema for source data"""
         return StructType([
             StructField("id", StringType(), False),
-            StructField("name", StringType(), True),
-            StructField("value", DecimalType(15, 2), True),
-            StructField("status", StringType(), True),
-            StructField("category", StringType(), True),
+            StructField("name", StringType(), False),
+            StructField("value", DecimalType(15, 2), False),
+            StructField("status", StringType(), False),
+            StructField("category", StringType(), False),
             StructField("source_system", StringType(), True),
             StructField("created_at", TimestampType(), True),
             StructField("created_by", StringType(), True),
             StructField("changed_at", TimestampType(), True),
-            StructField("changed_by", StringType(), True),
+            StructField("changed_by", StringType(), True)
         ])
     
     @staticmethod
-    def get_transformed_schema() -> StructType:
-        """Get the schema for transformed test data."""
+    def transformed_schema() -> StructType:
+        """Schema for transformed data"""
         return StructType([
             StructField("id", StringType(), False),
-            StructField("name", StringType(), True),
-            StructField("value", DecimalType(15, 2), True),
-            StructField("transformed_value", DecimalType(15, 2), True),
-            StructField("status", StringType(), True),
-            StructField("category", StringType(), True),
-            StructField("priority", IntegerType(), True),
-            StructField("etl_run_id", StringType(), True),
-            StructField("processed_at", TimestampType(), True),
-            StructField("processed_by", StringType(), True),
+            StructField("name", StringType(), False),
+            StructField("value", DecimalType(15, 2), False),
+            StructField("transformed_value", DecimalType(15, 2), False),
+            StructField("status", StringType(), False),
+            StructField("category", StringType(), False),
+            StructField("priority", IntegerType(), False),
+            StructField("etl_run_id", StringType(), False),
+            StructField("processed_at", TimestampType(), False),
+            StructField("processed_by", StringType(), False)
         ])
     
     @staticmethod
-    def generate_source_data(
-        spark: SparkSession,
-        config: TestDataConfig
-    ) -> DataFrame:
-        """
-        Generate test source data.
-        
-        Args:
-            spark: Spark session
-            config: Configuration for data generation
-            
-        Returns:
-            DataFrame with generated test data
-        """
-        import random
-        from datetime import timedelta
-        
-        categories = config.categories or ["PREMIUM", "STANDARD", "BASIC", "VIP", "TRIAL"]
-        min_val, max_val = config.value_range
-        now = datetime.now()
-        
-        data = []
-        for i in range(1, config.num_records + 1):
-            record_id = f"TEST{i:06d}"
-            
-            # Handle nulls for testing
-            if config.include_nulls and random.random() < 0.1:
-                name = None
-                value = None
-            else:
-                name = f"Product {i}"
-                value = Decimal(str(random.uniform(min_val, max_val)))
-            
-            # Handle duplicates for testing
-            if config.include_duplicates and i > 1 and random.random() < 0.05:
-                record_id = f"TEST{i-1:06d}"
-            
-            # Handle invalid values for testing
-            if config.include_invalid and random.random() < 0.05:
-                value = Decimal("-1")
-            
-            record = {
-                "id": record_id,
-                "name": name,
-                "value": value,
-                "status": random.choice(["ACTIVE", "INACTIVE", "PENDING"]),
-                "category": random.choice(categories),
-                "source_system": "TEST_SYSTEM",
-                "created_at": now - timedelta(days=random.randint(1, 365)),
-                "created_by": "test_user",
-                "changed_at": now - timedelta(hours=random.randint(1, 24)),
-                "changed_by": "test_user",
-            }
-            data.append(record)
-        
-        return spark.createDataFrame(data, schema=TestDataGenerator.get_source_schema())
+    def config_schema() -> StructType:
+        """Schema for configuration data"""
+        return StructType([
+            StructField("config_key", StringType(), False),
+            StructField("config_value", StringType(), False),
+            StructField("description", StringType(), True),
+            StructField("config_type", StringType(), True),
+            StructField("is_active", StringType(), True)
+        ])
+
+
+class SparkTestFixture:
+    """Test fixture manager for Spark sessions and data"""
     
-    @staticmethod
-    def generate_transformed_data(
-        spark: SparkSession,
-        config: TestDataConfig,
-        run_id: str = "TEST_RUN_001"
+    def __init__(self, spark: SparkSession):
+        self.spark = spark
+        self._temp_tables: List[str] = []
+        self._temp_views: List[str] = []
+    
+    def create_temp_table(
+        self,
+        table_name: str,
+        data: List[Dict[str, Any]],
+        schema: StructType
     ) -> DataFrame:
-        """
-        Generate test transformed data.
-        
-        Args:
-            spark: Spark session
-            config: Configuration for data generation
-            run_id: ETL run identifier
-            
-        Returns:
-            DataFrame with generated transformed test data
-        """
-        import random
-        
-        now = datetime.now()
-        data = []
-        
-        for i in range(1, config.num_records + 1):
-            value = Decimal(str(random.uniform(*config.value_range)))
-            transformed_value = value * Decimal("1.2")
-            
-            if value >= 750:
-                priority = 1
-            elif value >= 300:
-                priority = 2
-            else:
-                priority = 3
-            
-            record = {
-                "id": f"TEST{i:06d}",
-                "name": f"PRODUCT {i}",
-                "value": value,
-                "transformed_value": transformed_value,
-                "status": "TRANSFORMED",
-                "category": random.choice(config.categories or ["PREMIUM", "STANDARD"]),
-                "priority": priority,
-                "etl_run_id": run_id,
-                "processed_at": now,
-                "processed_by": "test_user",
+        """Create temporary table for testing"""
+        df = self.spark.createDataFrame(data, schema)
+        df.createOrReplaceTempView(table_name)
+        self._temp_views.append(table_name)
+        return df
+    
+    def create_source_table(
+        self,
+        count: int = 10,
+        table_name: str = "test_source_data",
+        **kwargs
+    ) -> DataFrame:
+        """Create source data table for testing"""
+        data = TestDataFactory.create_source_records(count, **kwargs)
+        return self.create_temp_table(
+            table_name,
+            data,
+            TestSchemas.source_schema()
+        )
+    
+    def create_transformed_table(
+        self,
+        count: int = 10,
+        table_name: str = "test_transformed_data",
+        **kwargs
+    ) -> DataFrame:
+        """Create transformed data table for testing"""
+        data = TestDataFactory.create_transformed_records(count, **kwargs)
+        return self.create_temp_table(
+            table_name,
+            data,
+            TestSchemas.transformed_schema()
+        )
+    
+    def create_config_table(
+        self,
+        table_name: str = "test_config_data"
+    ) -> DataFrame:
+        """Create configuration table for testing"""
+        config_data = [
+            {
+                "config_key": "BATCH_SIZE",
+                "config_value": "1000",
+                "description": "Default batch size",
+                "config_type": "PERFORMANCE",
+                "is_active": "X"
+            },
+            {
+                "config_key": "MAX_RETRIES",
+                "config_value": "3",
+                "description": "Maximum retries",
+                "config_type": "ERROR_HANDLING",
+                "is_active": "X"
+            },
+            {
+                "config_key": "PREMIUM_MULTIPLIER",
+                "config_value": "1.5",
+                "description": "Premium multiplier",
+                "config_type": "BUSINESS_RULE",
+                "is_active": "X"
             }
-            data.append(record)
-        
-        return spark.createDataFrame(data, schema=TestDataGenerator.get_transformed_schema())
+        ]
+        return self.create_temp_table(
+            table_name,
+            config_data,
+            TestSchemas.config_schema()
+        )
+    
+    def cleanup(self):
+        """Clean up all temporary tables and views"""
+        for view in self._temp_views:
+            try:
+                self.spark.catalog.dropTempView(view)
+            except Exception:
+                pass
+        self._temp_views.clear()
+    
+    @contextmanager
+    def isolated_test(self):
+        """Context manager for isolated test execution"""
+        try:
+            yield self
+        finally:
+            self.cleanup()
 
 
 class DataFrameAssertions:
-    """Custom assertions for DataFrame testing."""
+    """Custom assertions for DataFrame testing"""
     
     @staticmethod
-    def assert_row_count(df: DataFrame, expected_count: int, message: str = None):
-        """Assert DataFrame has expected row count."""
-        actual_count = df.count()
-        msg = message or f"Expected {expected_count} rows, got {actual_count}"
-        assert actual_count == expected_count, msg
+    def assert_dataframe_not_empty(df: DataFrame, msg: str = "DataFrame should not be empty"):
+        """Assert DataFrame is not empty"""
+        assert df.count() > 0, msg
     
     @staticmethod
-    def assert_column_exists(df: DataFrame, column_name: str):
-        """Assert column exists in DataFrame."""
-        assert column_name in df.columns, f"Column '{column_name}' not found"
+    def assert_dataframe_count(df: DataFrame, expected: int, msg: str = None):
+        """Assert DataFrame has expected row count"""
+        actual = df.count()
+        msg = msg or f"Expected {expected} rows, got {actual}"
+        assert actual == expected, msg
     
     @staticmethod
-    def assert_no_nulls(df: DataFrame, column_name: str):
-        """Assert column has no null values."""
-        null_count = df.filter(df[column_name].isNull()).count()
-        assert null_count == 0, f"Column '{column_name}' has {null_count} null values"
+    def assert_dataframe_schema(df: DataFrame, expected_schema: StructType, msg: str = None):
+        """Assert DataFrame has expected schema"""
+        msg = msg or "Schema mismatch"
+        assert df.schema == expected_schema, msg
     
     @staticmethod
-    def assert_unique_values(df: DataFrame, column_name: str):
-        """Assert column has unique values."""
+    def assert_column_exists(df: DataFrame, column_name: str, msg: str = None):
+        """Assert column exists in DataFrame"""
+        msg = msg or f"Column '{column_name}' should exist"
+        assert column_name in df.columns, msg
+    
+    @staticmethod
+    def assert_no_nulls(df: DataFrame, column_name: str, msg: str = None):
+        """Assert column has no null values"""
+        from pyspark.sql.functions import col
+        null_count = df.filter(col(column_name).isNull()).count()
+        msg = msg or f"Column '{column_name}' should have no nulls, found {null_count}"
+        assert null_count == 0, msg
+    
+    @staticmethod
+    def assert_all_values_positive(df: DataFrame, column_name: str, msg: str = None):
+        """Assert all numeric values are positive"""
+        from pyspark.sql.functions import col
+        negative_count = df.filter(col(column_name) <= 0).count()
+        msg = msg or f"Column '{column_name}' should have all positive values, found {negative_count} non-positive"
+        assert negative_count == 0, msg
+    
+    @staticmethod
+    def assert_unique_ids(df: DataFrame, id_column: str = "id", msg: str = None):
+        """Assert all IDs are unique"""
         total_count = df.count()
-        distinct_count = df.select(column_name).distinct().count()
-        assert total_count == distinct_count, \
-            f"Column '{column_name}' has duplicates: {total_count} total, {distinct_count} distinct"
+        unique_count = df.select(id_column).distinct().count()
+        msg = msg or f"IDs should be unique, found {total_count - unique_count} duplicates"
+        assert total_count == unique_count, msg
     
     @staticmethod
-    def assert_value_range(
+    def assert_dataframes_equal(df1: DataFrame, df2: DataFrame, check_order: bool = False):
+        """Assert two DataFrames are equal"""
+        if check_order:
+            assert df1.collect() == df2.collect(), "DataFrames are not equal (order matters)"
+        else:
+            from pyspark.sql.functions import col
+            # Sort both DataFrames by all columns for comparison
+            sorted_df1 = df1.sort(*df1.columns).collect()
+            sorted_df2 = df2.sort(*df2.columns).collect()
+            assert sorted_df1 == sorted_df2, "DataFrames are not equal (order ignored)"
+    
+    @staticmethod
+    def assert_value_in_range(
         df: DataFrame,
         column_name: str,
         min_value: Any,
-        max_value: Any
+        max_value: Any,
+        msg: str = None
     ):
-        """Assert column values are within range."""
-        from pyspark.sql.functions import col, min as spark_min, max as spark_max
-        
-        stats = df.agg(
-            spark_min(col(column_name)).alias("min"),
-            spark_max(col(column_name)).alias("max")
-        ).collect()[0]
-        
-        actual_min = stats["min"]
-        actual_max = stats["max"]
-        
-        assert actual_min >= min_value, \
-            f"Min value {actual_min} is less than {min_value}"
-        assert actual_max <= max_value, \
-            f"Max value {actual_max} is greater than {max_value}"
-    
-    @staticmethod
-    def assert_schemas_equal(df1: DataFrame, df2: DataFrame):
-        """Assert two DataFrames have the same schema."""
-        schema1 = sorted([(f.name, f.dataType) for f in df1.schema.fields])
-        schema2 = sorted([(f.name, f.dataType) for f in df2.schema.fields])
-        assert schema1 == schema2, "Schemas do not match"
-    
-    @staticmethod
-    def assert_data_equal(df1: DataFrame, df2: DataFrame, order_by: List[str] = None):
-        """Assert two DataFrames have the same data."""
-        if order_by:
-            df1 = df1.orderBy(order_by)
-            df2 = df2.orderBy(order_by)
-        
-        rows1 = df1.collect()
-        rows2 = df2.collect()
-        
-        assert len(rows1) == len(rows2), \
-            f"Row counts differ: {len(rows1)} vs {len(rows2)}"
-        
-        for i, (row1, row2) in enumerate(zip(rows1, rows2)):
-            assert row1 == row2, f"Row {i} differs: {row1} vs {row2}"
+        """Assert all values in column are within range"""
+        from pyspark.sql.functions import col
+        out_of_range = df.filter(
+            (col(column_name) < min_value) | (col(column_name) > max_value)
+        ).count()
+        msg = msg or f"Column '{column_name}' should have values between {min_value} and {max_value}, found {out_of_range} out of range"
+        assert out_of_range == 0, msg
 
 
-class TestDataStore:
-    """Manage test data storage and retrieval."""
-    
-    def __init__(self, spark: SparkSession, base_path: Path):
-        """
-        Initialize test data store.
-        
-        Args:
-            spark: Spark session
-            base_path: Base path for storing test data
-        """
-        self.spark = spark
-        self.base_path = base_path
-        self.base_path.mkdir(parents=True, exist_ok=True)
-    
-    def save_test_data(
-        self,
-        df: DataFrame,
-        name: str,
-        format: str = "parquet",
-        mode: str = "overwrite"
-    ) -> Path:
-        """
-        Save test data to storage.
-        
-        Args:
-            df: DataFrame to save
-            name: Name for the dataset
-            format: Storage format
-            mode: Write mode
-            
-        Returns:
-            Path where data was saved
-        """
-        path = self.base_path / name
-        df.write.format(format).mode(mode).save(str(path))
-        return path
-    
-    def load_test_data(
-        self,
-        name: str,
-        format: str = "parquet"
-    ) -> DataFrame:
-        """
-        Load test data from storage.
-        
-        Args:
-            name: Name of the dataset
-            format: Storage format
-            
-        Returns:
-            Loaded DataFrame
-        """
-        path = self.base_path / name
-        return self.spark.read.format(format).load(str(path))
-    
-    def cleanup(self):
-        """Remove all test data."""
-        if self.base_path.exists():
-            shutil.rmtree(self.base_path)
-
-
-class MockDataSource:
-    """Mock data source for testing extraction."""
+class TestIsolation:
+    """Utilities for test isolation and cleanup"""
     
     def __init__(self, spark: SparkSession):
-        """
-        Initialize mock data source.
-        
-        Args:
-            spark: Spark session
-        """
         self.spark = spark
-        self.data_store: Dict[str, DataFrame] = {}
+        self._cleanup_functions: List[Callable] = []
     
-    def register_table(self, name: str, df: DataFrame):
-        """
-        Register a table in the mock source.
-        
-        Args:
-            name: Table name
-            df: DataFrame to register
-        """
-        self.data_store[name] = df
-        df.createOrReplaceTempView(name)
+    def register_cleanup(self, cleanup_func: Callable):
+        """Register cleanup function to be called after test"""
+        self._cleanup_functions.append(cleanup_func)
     
-    def query(self, sql: str) -> DataFrame:
-        """
-        Execute SQL query against mock source.
-        
-        Args:
-            sql: SQL query string
-            
-        Returns:
-            Query result DataFrame
-        """
-        return self.spark.sql(sql)
+    def cleanup_all(self):
+        """Execute all registered cleanup functions"""
+        for cleanup_func in reversed(self._cleanup_functions):
+            try:
+                cleanup_func()
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+        self._cleanup_functions.clear()
     
-    def get_table(self, name: str) -> DataFrame:
-        """
-        Get table from mock source.
-        
-        Args:
-            name: Table name
-            
-        Returns:
-            Table DataFrame
-        """
-        return self.data_store.get(name)
+    @contextmanager
+    def table_cleanup(self, table_names: List[str]):
+        """Context manager to clean up tables after test"""
+        try:
+            yield
+        finally:
+            for table_name in table_names:
+                try:
+                    self.spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+                except Exception:
+                    pass
+    
+    @contextmanager
+    def temp_view_cleanup(self, view_names: List[str]):
+        """Context manager to clean up temp views after test"""
+        try:
+            yield
+        finally:
+            for view_name in view_names:
+                try:
+                    self.spark.catalog.dropTempView(view_name)
+                except Exception:
+                    pass
 
 
-class TestRunContext:
-    """Context manager for test runs with isolation."""
+class MockLogger:
+    """Mock logger for testing without side effects"""
     
-    def __init__(
-        self,
-        run_id: str,
-        spark_context: SparkTestContext,
-        config: Optional[Dict[str, Any]] = None
-    ):
-        """
-        Initialize test run context.
-        
-        Args:
-            run_id: Test run identifier
-            spark_context: Spark test context
-            config: Test configuration
-        """
-        self.run_id = run_id
-        self.spark_context = spark_context
-        self.config = config or {}
-        self.data_store = TestDataStore(
-            spark_context.spark,
-            spark_context.temp_dir / "data"
+    def __init__(self):
+        self.logs = []
+    
+    def log_info(self, component: str, message: str, details: str = None):
+        """Log info message"""
+        self.logs.append({
+            "level": "INFO",
+            "component": component,
+            "message": message,
+            "details": details
+        })
+    
+    def log_error(self, component: str, message: str, details: str = None):
+        """Log error message"""
+        self.logs.append({
+            "level": "ERROR",
+            "component": component,
+            "message": message,
+            "details": details
+        })
+    
+    def log_warning(self, component: str, message: str, details: str = None):
+        """Log warning message"""
+        self.logs.append({
+            "level": "WARNING",
+            "component": component,
+            "message": message,
+            "details": details
+        })
+    
+    def get_logs(self, level: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all logs or filter by level"""
+        if level:
+            return [log for log in self.logs if log["level"] == level]
+        return self.logs
+    
+    def clear_logs(self):
+        """Clear all logs"""
+        self.logs.clear()
+    
+    def assert_logged(self, level: str, component: str, message_contains: str):
+        """Assert a log entry exists"""
+        for log in self.logs:
+            if (log["level"] == level and 
+                log["component"] == component and 
+                message_contains in log["message"]):
+                return True
+        raise AssertionError(
+            f"Expected log not found: {level} - {component} - {message_contains}"
         )
-        self.mock_source = MockDataSource(spark_context.spark)
-        self.metrics: Dict[str, Any] = {}
+
+
+class TestMetrics:
+    """Collect and assert on test metrics"""
     
-    def __enter__(self):
-        """Enter test context."""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Exit test context and cleanup."""
-        self.cleanup()
-    
-    def cleanup(self):
-        """Clean up test resources."""
-        self.data_store.cleanup()
+    def __init__(self):
+        self.metrics = {}
     
     def record_metric(self, name: str, value: Any):
-        """Record a test metric."""
+        """Record a test metric"""
         self.metrics[name] = value
     
-    def get_metric(self, name: str) -> Any:
-        """Get a recorded metric."""
-        return self.metrics.get(name)
-
-
-def create_test_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Create test configuration with defaults.
+    def get_metric(self, name: str, default: Any = None) -> Any:
+        """Get recorded metric"""
+        return self.metrics.get(name, default)
     
-    Args:
-        overrides: Configuration overrides
-        
-    Returns:
-        Test configuration dictionary
-    """
-    config = {
-        "batch_size": 100,
-        "max_retries": 3,
-        "source_type": "DATABASE",
-        "target_type": "DATABASE",
-        "enable_validation": True,
-        "enable_reconciliation": False,
-        "log_level": "INFO",
-    }
+    def assert_metric_equals(self, name: str, expected: Any):
+        """Assert metric equals expected value"""
+        actual = self.get_metric(name)
+        assert actual == expected, f"Metric '{name}': expected {expected}, got {actual}"
     
-    if overrides:
-        config.update(overrides)
+    def assert_metric_greater_than(self, name: str, threshold: Any):
+        """Assert metric is greater than threshold"""
+        actual = self.get_metric(name)
+        assert actual > threshold, f"Metric '{name}': expected > {threshold}, got {actual}"
     
-    return config
+    def clear_metrics(self):
+        """Clear all metrics"""
+        self.metrics.clear()
 
 
-# Pytest fixtures
-
-@pytest.fixture(scope="function")
-def spark_session():
-    """Fixture for creating isolated Spark session per test."""
-    context = SparkTestSessionBuilder.create_test_session("test")
-    yield context.spark
-    context.spark.stop()
-    context.cleanup()
-
-
-@pytest.fixture(scope="function")
-def spark_context():
-    """Fixture for creating full test context per test."""
-    context = SparkTestSessionBuilder.create_test_session("test")
-    yield context
-    context.spark.stop()
-    context.cleanup()
-
-
-@pytest.fixture(scope="function")
-def test_data_generator():
-    """Fixture for test data generator."""
-    return TestDataGenerator()
-
-
-@pytest.fixture(scope="function")
-def test_run_context(spark_context):
-    """Fixture for test run context."""
-    context = TestRunContext(
-        run_id="TEST_RUN_001",
-        spark_context=spark_context
+def pytest_configure(config):
+    """Pytest configuration hook"""
+    config.addinivalue_line(
+        "markers", "integration: mark test as integration test"
     )
-    yield context
-    context.cleanup()
+    config.addinivalue_line(
+        "markers", "slow: mark test as slow running"
+    )
+    config.addinivalue_line(
+        "markers", "unit: mark test as unit test"
+    )
+
+
+@pytest.fixture(scope="session")
+def spark_session():
+    """Create SparkSession for testing"""
+    spark = (SparkSession.builder
+             .appName("ETL_Test")
+             .master("local[2]")
+             .config("spark.sql.shuffle.partitions", "2")
+             .config("spark.default.parallelism", "2")
+             .config("spark.sql.warehouse.dir", "/tmp/spark-warehouse")
+             .getOrCreate())
+    
+    yield spark
+    
+    spark.stop()
 
 
 @pytest.fixture(scope="function")
-def sample_source_data(spark_session):
-    """Fixture for sample source data."""
-    config = TestDataConfig(num_records=10)
-    return TestDataGenerator.generate_source_data(spark_session, config)
+def spark_fixture(spark_session):
+    """Create SparkTestFixture for each test"""
+    fixture = SparkTestFixture(spark_session)
+    
+    with fixture.isolated_test():
+        yield fixture
 
 
 @pytest.fixture(scope="function")
-def sample_transformed_data(spark_session):
-    """Fixture for sample transformed data."""
-    config = TestDataConfig(num_records=10)
-    return TestDataGenerator.generate_transformed_data(spark_session, config)
+def test_isolation(spark_session):
+    """Create TestIsolation for each test"""
+    isolation = TestIsolation(spark_session)
+    
+    yield isolation
+    
+    isolation.cleanup_all()
+
+
+@pytest.fixture(scope="function")
+def mock_logger():
+    """Create MockLogger for testing"""
+    logger = MockLogger()
+    yield logger
+    logger.clear_logs()
+
+
+@pytest.fixture(scope="function")
+def test_metrics():
+    """Create TestMetrics for testing"""
+    metrics = TestMetrics()
+    yield metrics
+    metrics.clear_metrics()
+
+
+@pytest.fixture(scope="function")
+def data_factory():
+    """Create TestDataFactory"""
+    return TestDataFactory()
 
 
 @pytest.fixture(scope="function")
 def df_assertions():
-    """Fixture for DataFrame assertions."""
+    """Create DataFrameAssertions"""
     return DataFrameAssertions()
