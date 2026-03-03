@@ -1,104 +1,35 @@
 # ETL Logger Configuration
-
 logger:
-  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  log_level: INFO
+  # Minimum log level (DEBUG, INFO, WARNING, ERROR)
+  min_level: INFO
   
-  # Console output
-  console_output: true
+  # Maximum number of log entries to keep in memory
+  max_entries: 10000
   
-  # File output
-  file_output: false
-  log_file_path: "logs/etl.log"
+  # Enable/disable logging
+  enabled: true
   
-  # In-memory storage
-  max_logs_in_memory: 10000
-  
-  # Log rotation (if file output enabled)
-  max_file_size_mb: 100
-  backup_count: 5
-  
-  # Timestamp format
-  timestamp_format: "%Y-%m-%d %H:%M:%S.%f"
-  
-  # Component logging levels (optional overrides)
+  # Log export settings
+  export:
+    enabled: false
+    filepath: logs/etl_logs.txt
+    
+  # Console output settings
+  console:
+    enabled: true
+    format: "[{timestamp}] {level}: {component} - {message}"
+    
+  # Component-specific logging levels
   component_levels:
     EXTRACTOR: INFO
     TRANSFORMER: INFO
     LOADER: INFO
     ORCHESTRATOR: INFO
-    DATA_QUALITY: WARNING
-    MONITOR: INFO
+    DATA_QUALITY: INFO
+    MONITOR: WARNING
 
-# ETL Configuration
-etl:
-  # Default batch size
-  batch_size: 1000
-  
-  # Max records to process (0 = unlimited)
-  max_records: 0
-  
-  # Source and target types
-  default_source_type: "DATABASE"
-  default_target_type: "DATABASE"
-  
-  # Retry configuration
-  max_retries: 3
-  retry_delay_seconds: 5
-  
-  # Performance
-  parallel_processing: false
-  num_workers: 4
-
-# Data Quality Configuration
-data_quality:
-  enable_quality_checks: true
-  enable_profiling: true
-  enable_anomaly_detection: true
-  
-  # Quality check thresholds
-  max_null_percentage: 5.0
-  max_duplicate_percentage: 1.0
-  
-  # Validation rules
-  validation:
-    check_completeness: true
-    check_uniqueness: true
-    check_validity: true
-    check_consistency: true
-
-# Monitoring Configuration
-monitoring:
-  enable_monitoring: true
-  dashboard_retention_days: 90
-  
-  # Alert thresholds
-  alerts:
-    error_rate_threshold: 10.0
-    performance_threshold_seconds: 300
-    max_running_jobs: 5
-  
-  # Notification settings
-  notifications:
-    enable_email: false
-    email_recipients: []
-    enable_slack: false
-    slack_webhook_url: ""
-
-# Spark Configuration
-spark:
-  app_name: "ETL Logger Application"
-  master: "local[*]"
-  
-  # Memory settings
-  driver_memory: "2g"
-  executor_memory: "4g"
-  
-  # Shuffle partitions
-  sql_shuffle_partitions: 200
-  
-  # Additional configurations
-  config:
-    "spark.sql.adaptive.enabled": "true"
-    "spark.sql.adaptive.coalescePartitions.enabled": "true"
-    "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
+# Application settings
+app:
+  name: ETL Pipeline
+  version: 1.0.0
+  environment: development
