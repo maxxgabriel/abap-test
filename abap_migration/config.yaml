@@ -1,108 +1,90 @@
-# ETL Monitoring Configuration
+# ETL Logger Configuration
+
+logger:
+  # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  default_level: INFO
+  
+  # Console output settings
+  console:
+    enabled: true
+    format: "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    date_format: "%Y-%m-%d %H:%M:%S"
+  
+  # In-memory storage settings
+  storage:
+    max_entries: 10000  # Maximum number of log entries to store
+    auto_clear: false    # Automatically clear old entries when limit reached
+  
+  # Component-specific settings
+  components:
+    EXTRACTOR:
+      level: INFO
+      enabled: true
+    
+    TRANSFORMER:
+      level: INFO
+      enabled: true
+    
+    LOADER:
+      level: INFO
+      enabled: true
+    
+    ORCHESTRATOR:
+      level: INFO
+      enabled: true
+    
+    DATA_QUALITY:
+      level: INFO
+      enabled: true
+    
+    MONITOR:
+      level: WARNING
+      enabled: true
+
+# ETL Process Configuration
+etl:
+  batch_size: 1000
+  max_retries: 3
+  timeout_seconds: 3600
+  
+  # Source configuration
+  source:
+    type: DATABASE
+    format: parquet
+    
+  # Target configuration
+  target:
+    type: DATABASE
+    format: parquet
+    mode: overwrite
 
 # Spark Configuration
 spark:
-  app_name: "ETL_Monitoring_Module"
-  master: "local[*]"
+  app_name: ETL_Logger_Application
+  master: local[*]
   config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
+    spark.sql.shuffle.partitions: 200
+    spark.executor.memory: 4g
+    spark.driver.memory: 2g
+    spark.sql.adaptive.enabled: true
 
-# Monitoring Settings
+# Monitoring and Alerts
 monitoring:
-  # Default lookback periods (days)
-  dashboard_days: 7
-  metrics_days: 30
-  error_summary_days: 7
-  
-  # Health check thresholds
-  health_check:
-    max_running_jobs: 5
-    critical_error_rate: 50.0
-    warning_error_rate: 20.0
-    max_avg_duration: 3600  # seconds
-  
-  # Alert settings
-  alerts:
-    enabled: true
-    alert_table: "etl_alerts"
-    retention_days: 90
-    
-  # Aggregation settings
-  aggregation:
-    default_period: "day"  # hour, day, week, month
-    supported_periods:
-      - "hour"
-      - "day"
-      - "week"
-      - "month"
-
-# Table Configuration
-tables:
-  run_log: "etl_run_log"
-  error_log: "etl_error_log"
-  alerts: "etl_alerts"
-  
-  # Storage locations (update for your environment)
-  storage:
-    format: "delta"  # delta, parquet, iceberg
-    base_path: "/data/etl/"
-    run_log_path: "/data/etl/run_log"
-    error_log_path: "/data/etl/error_log"
-    alerts_path: "/data/etl/alerts"
-
-# Performance Settings
-performance:
-  cache_enabled: true
-  cache_tables:
-    - "etl_run_log"
-  
-  partition_columns:
-    run_log:
-      - "start_time"
-    error_log:
-      - "created_at"
-  
-  optimization:
-    auto_optimize: true
-    vacuum_retention_hours: 168  # 7 days
-
-# Logging Configuration
-logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  handlers:
-    console:
-      enabled: true
-    file:
-      enabled: true
-      path: "/var/log/etl/monitor.log"
-      max_bytes: 10485760  # 10MB
-      backup_count: 5
-
-# Pattern Analysis Settings
-pattern_analysis:
   enabled: true
-  min_samples: 10
-  confidence_level: 0.95
+  alert_on_error: true
+  alert_threshold: 5  # Number of errors before alerting
   
-  # Time-based patterns
-  time_patterns:
-    analyze_hours: true
-    analyze_days: true
-    analyze_weeks: true
+  health_check:
+    enabled: true
+    interval_seconds: 300
 
-# Throughput Calculation
-throughput:
-  unit: "records_per_second"
-  precision: 2
-  min_duration: 1  # Minimum duration in seconds to calculate throughput
-
-# Retention Policies
-retention:
-  run_log_days: 90
-  error_log_days: 180
-  alert_log_days: 90
-  archive_enabled: true
-  archive_path: "/data/etl/archive/"
+# Data Quality Rules
+data_quality:
+  enabled: true
+  checks:
+    - completeness
+    - uniqueness
+    - validity
+    - consistency
+  
+  failure_action: warn  # Options: warn, fail, ignore
