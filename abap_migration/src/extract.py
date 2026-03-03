@@ -1,30 +1,146 @@
 """
-PySpark ETL Extractor Module
-Migrated from ABAP zcl_etl_extractor
+Data Extraction Module
+Extracts data from various sources with support for full and incremental loads.
 """
+
 from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import col, lit
 from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType
 from typing import Optional
-import yaml
 from datetime import datetime
+
+from src.config_manager import ConfigManager
 from src.logger import ETLLogger
 
 
-class ETLExtractor:
-    """Extract data from various sources"""
-    
-    def __init__(self, spark: SparkSession, config: dict, run_id: str, source_type: str = "DATABASE"):
+class DataExtractor:
+    """
+    Extract data from various sources with filtering and incremental support.
+    """
+
+    def __init__(self, spark: SparkSession, config_manager: ConfigManager, run_id: str):
+        """
+        Initialize Data Extractor.
+
+        Args:
+            spark: SparkSession instance
+            config_manager: Configuration manager
+            run_id: Unique ETL run identifier
+        """
         self.spark = spark
-        self.config = config
+        self.config = config_manager
         self.run_id = run_id
-        self.source_type = source_type
-        self.logger = ETLLogger.get_instance()
-        
-    def get_source_schema(self) -> StructType:
+        self.logger = ETLLogger(component="EXTRACTOR")
+
+    def extract_data(
+        self,
+        source_type: str = "DATABASE",
+        filter_condition: Optional[str] = None,
+        max_records: int = 0
+    ) -> DataFrame:
+        """
+        Extract data based on source type.
+
+        Args:
+            source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
+            filter_condition: Optional filter condition
+            max_records: Maximum records to extract (0 = unlimited)
+
+        Returns:
+            Extracted DataFrame
+        """
+        self.logger.log_info(f"Starting extraction - Source: {source_type}")
+
+        try:
+            if source_type == "DATABASE":
+                data = self._extract_from_database(filter_condition)
+            elif source_type == "STAGING":
+                data = self._extract_from_staging()
+            elif source_type == "INCREMENTAL":
+                data = self._extract_incremental()
+            else:
+                data = self._extract_from_database(filter_condition)
+
+            # Apply max records limit
+            if max_records > 0:
+                data = data.limit(max_records)
+
+            record_count = data.count()
+            self.logger.log_info(f"Extracted {record_count} records")
+
+            return data
+
+        except Exception as e:
+            self.logger.log_error(f"Extraction failed: {str(e)}")
+            raise
+
+    def _extract_from_database(self, filter_condition: Optional[str] = None) -> DataFrame:
+        """Extract from source database/table"""
+        source_path = self.config.get("source.database_path")
+
+        data = self.spark.read \
+            .format(self.config.get("source.format", "delta")) \
+            .load(source_path)
+
+        if filter_condition:
+            data = data.filter(filter_condition)
+
+        return data
+
+    def _extract_from_staging(self) -> DataFrame:
+        """Extract from staging area"""
+        staging_path = self.config.get("source.staging_path")
+
+        return self.spark.read \
+            .format("delta") \
+            .load(staging_path) \
+            .filter(col("run_id") == self.run_id) \
+            .filter(col("status") == "READY")
+
+    def _extract_incremental(self) -> DataFrame:
+        """Extract only changed records since last successful run"""
+        # Get last successful run timestamp
+        last_run_time = self._get_last_run_time()
+
+        source_path = self.config.get("source.database_path")
+
+        data = self.spark.read \
+            .format("delta") \
+            .load(source_path)
+
+        if last_run_time:
+            data = data.filter(col("changed_at") > lit(last_run_time))
+            self.logger.log_info(f"Incremental load from {last_run_time}")
+        else:
+            self.logger.log_info("No previous run found - performing full load")
+
+        return data
+
+    def _get_last_run_time(self) -> Optional[datetime]:
+        """Get timestamp of last successful run"""
+        try:
+            run_log_path = self.config.get("metadata.run_log_path")
+            run_log = self.spark.read.format("delta").load(run_log_path)
+
+            last_run = run_log \
+                .filter(col("status") == "SUCCESS") \
+                .orderBy(col("end_time").desc()) \
+                .limit(1) \
+                .collect()
+
+            if last_run:
+                return last_run[0]["end_time"]
+        except Exception as e:
+            self.logger.log_warning(f"Could not get last run time: {str(e)}")
+
+        return None
+
+    @staticmethod
+    def get_source_schema() -> StructType:
         """Define source data schema"""
         return StructType([
             StructField("id", StringType(), False),
-            StructField("name", StringType(), True),
+            StructField("name", StringType(), False),
             StructField("value", DecimalType(15, 2), True),
             StructField("status", StringType(), True),
             StructField("category", StringType(), True),
@@ -34,118 +150,3 @@ class ETLExtractor:
             StructField("changed_at", TimestampType(), True),
             StructField("changed_by", StringType(), True)
         ])
-    
-    def extract_data(self, filter_expr: Optional[str] = None, max_records: int = 0) -> DataFrame:
-        """Main extraction method"""
-        self.logger.log_info(
-            component="EXTRACTOR",
-            message=f"Starting extraction - Source: {self.source_type}"
-        )
-        
-        try:
-            if self.source_type == "DATABASE":
-                df = self.extract_from_database(filter_expr)
-            elif self.source_type == "STAGING":
-                df = self.extract_from_staging(self.run_id)
-            elif self.source_type == "INCREMENTAL":
-                df = self.extract_incremental()
-            else:
-                df = self.extract_from_database(filter_expr)
-            
-            # Apply max records limit if specified
-            if max_records > 0:
-                df = df.limit(max_records)
-            
-            record_count = df.count()
-            self.logger.log_info(
-                component="EXTRACTOR",
-                message=f"Extracted {record_count} records"
-            )
-            
-            return df
-            
-        except Exception as e:
-            self.logger.log_error(
-                component="EXTRACTOR",
-                message="Extraction failed",
-                details=str(e)
-            )
-            raise
-    
-    def extract_from_database(self, filter_expr: Optional[str] = None) -> DataFrame:
-        """Extract from source database table"""
-        jdbc_config = self.config['source']['jdbc']
-        
-        df = self.spark.read \
-            .format("jdbc") \
-            .option("url", jdbc_config['url']) \
-            .option("dbtable", jdbc_config['table']) \
-            .option("user", jdbc_config['user']) \
-            .option("password", jdbc_config['password']) \
-            .option("driver", jdbc_config['driver']) \
-            .load()
-        
-        # Apply filter if provided
-        if filter_expr:
-            df = df.filter(f"status = '{filter_expr}'")
-        
-        return df.limit(1000)
-    
-    def extract_from_staging(self, run_id: str) -> DataFrame:
-        """Extract from staging table"""
-        jdbc_config = self.config['source']['jdbc']
-        
-        query = f"""
-            (SELECT * FROM {jdbc_config['staging_table']} 
-             WHERE run_id = '{run_id}' AND status = 'READY') AS staging
-        """
-        
-        df = self.spark.read \
-            .format("jdbc") \
-            .option("url", jdbc_config['url']) \
-            .option("dbtable", query) \
-            .option("user", jdbc_config['user']) \
-            .option("password", jdbc_config['password']) \
-            .option("driver", jdbc_config['driver']) \
-            .load()
-        
-        return df
-    
-    def extract_incremental(self) -> DataFrame:
-        """Extract only changed records since last run"""
-        jdbc_config = self.config['source']['jdbc']
-        
-        # Get last successful run time
-        query = f"""
-            (SELECT COALESCE(MAX(end_time), '1900-01-01 00:00:00') as last_run
-             FROM {jdbc_config['log_table']} 
-             WHERE status = 'SUCCESS') AS last_run
-        """
-        
-        last_run_df = self.spark.read \
-            .format("jdbc") \
-            .option("url", jdbc_config['url']) \
-            .option("dbtable", query) \
-            .option("user", jdbc_config['user']) \
-            .option("password", jdbc_config['password']) \
-            .option("driver", jdbc_config['driver']) \
-            .load()
-        
-        last_run_time = last_run_df.first()['last_run']
-        
-        # Extract incremental data
-        incremental_query = f"""
-            (SELECT * FROM {jdbc_config['table']} 
-             WHERE changed_at > '{last_run_time}') AS incremental
-        """
-        
-        df = self.spark.read \
-            .format("jdbc") \
-            .option("url", jdbc_config['url']) \
-            .option("dbtable", incremental_query) \
-            .option("user", jdbc_config['user']) \
-            .option("password", jdbc_config['password']) \
-            .option("driver", jdbc_config['driver']) \
-            .load()
-        
-        return df
