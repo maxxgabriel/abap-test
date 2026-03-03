@@ -1,58 +1,138 @@
-# ETL Monitoring Configuration
+# ETL Transformation Module Configuration
 
-# Spark Configuration
+# Application settings
+application:
+  name: "ETL Transformation Module"
+  version: "1.0.0"
+  environment: "production"
+
+# Spark configuration
 spark:
-  app_name: "ETL_Monitoring"
+  app_name: "ETL_Transform_Pipeline"
   master: "local[*]"
   config:
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
 
-# Data Paths
-data_paths:
-  run_log_path: "data/etl_run_log"
-  error_log_path: "data/etl_error_log"
-  metrics_snapshot_path: "data/metrics_snapshots"
-
-# Monitoring Configuration
-monitoring:
-  default_lookback_days: 7
-  alert_threshold_error_rate: 50.0
-  alert_threshold_jobs: 5
-  sla_duration_seconds: 3600
+# ETL configuration
+etl:
+  batch_size: 1000
+  max_records: 0  # 0 means no limit
+  source_type: "DATABASE"
+  target_type: "DATABASE"
+  enable_validation: true
+  enable_reconciliation: true
   
-# Alerting Configuration
-alerting:
-  enabled: true
-  channels:
-    email:
-      enabled: true
-      recipients:
-        - "admin@example.com"
-        - "etl-team@example.com"
-    slack:
-      enabled: false
-      webhook_url: ""
-    pagerduty:
-      enabled: false
-      api_key: ""
+# Transformation rules
+transformation:
+  # Category multipliers
+  category_multipliers:
+    PREMIUM: 1.5
+    VIP: 2.0
+    STANDARD: 1.2
+    BASIC: 1.0
+    TRIAL: 0.8
+  
+  # Premium enrichment multiplier
+  premium_multiplier: 1.2
+  
+  # Priority thresholds
+  priority_rules:
+    threshold_p1: 1000
+    threshold_p2: 750
+    threshold_p3: 500
+    threshold_p4: 250
+    default_priority: 5
+  
+  # Status thresholds
+  status_rules:
+    high_value_threshold: 750
+    medium_value_threshold: 300
 
-# Dashboard Configuration
-dashboard:
-  refresh_interval_seconds: 300
-  retention_days: 90
+# Validation rules
+validation:
+  required_fields:
+    - id
+    - name
+    - value
+  
+  value_constraints:
+    min_value: 0
+    max_value: 999999.99
+  
+  priority_range:
+    min: 1
+    max: 5
+  
+  valid_categories:
+    - PREMIUM
+    - VIP
+    - STANDARD
+    - BASIC
+    - TRIAL
+    - UNCATEGORIZED
+  
+  valid_statuses:
+    - INVALID
+    - HIGH_VALUE
+    - MEDIUM_VALUE
+    - LOW_VALUE
+  
+  # Fail on validation errors
+  fail_on_validation_error: true
+  
+  # Maximum allowed error percentage
+  max_error_percentage: 5.0
 
-# Performance Thresholds
-thresholds:
-  max_duration_seconds: 7200
-  min_throughput_records_per_sec: 100
-  max_error_rate_percent: 5.0
+# Data quality checks
+data_quality:
+  enable_completeness_check: true
+  enable_uniqueness_check: true
+  enable_validity_check: true
+  enable_consistency_check: true
+  enable_anomaly_detection: true
+  
+  # Completeness threshold (% of non-null values required)
+  completeness_threshold: 95.0
+  
+  # Uniqueness threshold (% of unique IDs required)
+  uniqueness_threshold: 100.0
 
-# Metrics Collection
-metrics:
-  collection_enabled: true
-  collection_interval_seconds: 60
-  aggregation_intervals:
-    - hourly
-    - daily
-    - weekly
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/etl_transform.log"
+  console_output: true
+  
+# Performance settings
+performance:
+  cache_intermediate_results: true
+  persist_level: "MEMORY_AND_DISK"
+  checkpoint_interval: 10
+  
+# Metadata
+metadata:
+  processed_by: "pyspark_etl"
+  add_processing_timestamp: true
+  add_run_id: true
+
+# Error handling
+error_handling:
+  max_retries: 3
+  retry_delay_seconds: 5
+  continue_on_error: false
+  save_error_records: true
+  error_output_path: "output/errors"
+
+# Output settings
+output:
+  format: "parquet"
+  mode: "overwrite"
+  partition_by:
+    - category
+    - priority
+  compression: "snappy"
