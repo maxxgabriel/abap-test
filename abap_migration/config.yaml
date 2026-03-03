@@ -1,46 +1,66 @@
-# ETL Logger Configuration
+# PySpark Data Quality Framework Configuration
+
+spark:
+  app_name: "ETL_Data_Quality_Framework"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+
+data_quality:
+  # Critical fields that must not be null/empty
+  critical_fields:
+    - id
+    - name
+    - value
+    - category
+  
+  # Valid value ranges for numeric fields
+  value_ranges:
+    value:
+      min: 0
+      max: 1000000
+    transformed_value:
+      min: 0
+      max: 1500000
+    priority:
+      min: 1
+      max: 5
+  
+  # Valid categories
+  valid_categories:
+    - PREMIUM
+    - STANDARD
+    - BASIC
+    - VIP
+    - TRIAL
+    - UNCATEGORIZED
+  
+  # Data freshness threshold (hours)
+  freshness_threshold_hours: 24
+  
+  # Outlier detection (number of standard deviations)
+  outlier_std_devs: 3
+  
+  # Duplicate detection settings
+  duplicate_check_fields:
+    - id
+  
+  # Quality score thresholds
+  quality_thresholds:
+    critical: 95  # Must pass 95% of checks
+    warning: 85   # Warning if below 85%
+    fail: 70      # Fail if below 70%
 
 logging:
-  level: INFO  # DEBUG, INFO, WARNING, ERROR
-  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
-  date_format: "%Y-%m-%d %H:%M:%S"
-  
-  # In-memory storage settings
-  max_log_entries: 10000  # Maximum number of logs to keep in memory
-  auto_clear: false  # Automatically clear logs after export
-  
-  # Export settings
-  export_format: json  # json or csv
-  export_path: /tmp/etl_logs  # Path for log exports
-  
-  # Component-specific settings
-  components:
-    EXTRACTOR:
-      level: INFO
-      enabled: true
-    TRANSFORMER:
-      level: INFO
-      enabled: true
-    LOADER:
-      level: INFO
-      enabled: true
-    ORCHESTRATOR:
-      level: INFO
-      enabled: true
-    DATA_QUALITY:
-      level: WARNING
-      enabled: true
-    MONITOR:
-      level: INFO
-      enabled: true
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/data_quality.log"
 
-  # Log retention
-  retention:
-    enabled: true
-    days: 90
-
-  # Alert thresholds
-  alerts:
-    error_threshold: 10  # Alert after N errors
-    warning_threshold: 50  # Alert after N warnings
-    enabled: true
+output:
+  quality_report_path: "output/quality_reports"
+  failed_records_path: "output/failed_records"
+  profile_path: "output/data_profiles"
