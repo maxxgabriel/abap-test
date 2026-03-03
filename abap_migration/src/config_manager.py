@@ -1,17 +1,24 @@
 """
-Configuration Manager Module
-Centralized configuration management for ETL framework
+Centralized configuration management for ETL framework.
+Handles loading, validation, and access to configuration parameters.
 """
 
 import os
 import yaml
 from typing import Any, Dict, Optional
 from pathlib import Path
-from pyspark.sql import SparkSession
+
+
+class ConfigurationError(Exception):
+    """Custom exception for configuration-related errors."""
+    pass
 
 
 class ConfigManager:
-    """Singleton configuration manager for ETL framework"""
+    """
+    Singleton configuration manager for ETL framework.
+    Provides centralized access to configuration parameters.
+    """
     
     _instance: Optional['ConfigManager'] = None
     _config: Dict[str, Any] = {}
@@ -22,113 +29,152 @@ class ConfigManager:
         return cls._instance
     
     def __init__(self):
+        """Initialize configuration manager."""
         if not self._config:
-            self.load_config()
+            self._load_config()
     
-    def load_config(self, config_path: Optional[str] = None) -> None:
-        """Load configuration from YAML file"""
-        if config_path is None:
-            config_path = os.environ.get('ETL_CONFIG_PATH', 'config.yaml')
-        
-        config_file = Path(config_path)
-        
-        if not config_file.exists():
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
-        
-        with open(config_file, 'r') as f:
-            self._config = yaml.safe_load(f)
-        
-        # Resolve environment variables
-        self._resolve_env_vars(self._config)
-    
-    def _resolve_env_vars(self, config: Dict[str, Any]) -> None:
-        """Recursively resolve environment variables in configuration"""
-        for key, value in config.items():
-            if isinstance(value, str) and value.startswith('${') and value.endswith('}'):
-                env_var = value[2:-1]
-                config[key] = os.environ.get(env_var, value)
-            elif isinstance(value, dict):
-                self._resolve_env_vars(value)
-    
-    def get(self, key_path: str, default: Any = None) -> Any:
+    def _load_config(self, config_path: Optional[str] = None) -> None:
         """
-        Get configuration value by dot-notation path
+        Load configuration from YAML file.
         
         Args:
-            key_path: Dot-separated path (e.g., 'database.jdbc_url')
+            config_path: Path to configuration file. Defaults to config.yaml
+        """
+        if config_path is None:
+            # Look for config.yaml in project root
+            current_dir = Path(__file__).parent.parent
+            config_path = current_dir / "config.yaml"
+        
+        try:
+            with open(config_path, 'r') as f:
+                self._config = yaml.safe_load(f)
+            
+            # Validate required sections
+            self._validate_config()
+            
+            # Resolve environment variables
+            self._resolve_env_vars()
+            
+        except FileNotFoundError:
+            raise ConfigurationError(f"Configuration file not found: {config_path}")
+        except yaml.YAMLError as e:
+            raise ConfigurationError(f"Error parsing configuration file: {e}")
+    
+    def _validate_config(self) -> None:
+        """Validate that all required configuration sections exist."""
+        required_sections = ['spark', 'database', 'logging', 'etl']
+        
+        for section in required_sections:
+            if section not in self._config:
+                raise ConfigurationError(f"Missing required configuration section: {section}")
+    
+    def _resolve_env_vars(self) -> None:
+        """Resolve environment variables in configuration."""
+        # Resolve database passwords from environment
+        if 'database' in self._config:
+            for db_type in ['source', 'target']:
+                if db_type in self._config['database']:
+                    password_env = self._config['database'][db_type].get('password_env')
+                    if password_env:
+                        password = os.getenv(password_env)
+                        if password:
+                            self._config['database'][db_type]['password'] = password
+                        else:
+                            raise ConfigurationError(
+                                f"Environment variable {password_env} not set"
+                            )
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get configuration value by key path (dot notation).
+        
+        Args:
+            key: Configuration key in dot notation (e.g., 'spark.app_name')
             default: Default value if key not found
             
         Returns:
             Configuration value
         """
-        keys = key_path.split('.')
+        keys = key.split('.')
         value = self._config
         
-        for key in keys:
-            if isinstance(value, dict) and key in value:
-                value = value[key]
+        for k in keys:
+            if isinstance(value, dict):
+                value = value.get(k)
+                if value is None:
+                    return default
             else:
                 return default
         
         return value
     
-    def get_section(self, section: str) -> Dict[str, Any]:
-        """Get entire configuration section"""
-        return self._config.get(section, {})
+    def get_spark_config(self) -> Dict[str, Any]:
+        """Get Spark-specific configuration."""
+        return self._config.get('spark', {})
     
-    def set(self, key_path: str, value: Any) -> None:
-        """Set configuration value (runtime only)"""
-        keys = key_path.split('.')
+    def get_database_config(self, db_type: str = 'source') -> Dict[str, Any]:
+        """
+        Get database configuration.
+        
+        Args:
+            db_type: 'source' or 'target'
+            
+        Returns:
+            Database configuration dictionary
+        """
+        return self._config.get('database', {}).get(db_type, {})
+    
+    def get_logging_config(self) -> Dict[str, Any]:
+        """Get logging configuration."""
+        return self._config.get('logging', {})
+    
+    def get_etl_config(self) -> Dict[str, Any]:
+        """Get ETL-specific configuration."""
+        return self._config.get('etl', {})
+    
+    def get_quality_config(self) -> Dict[str, Any]:
+        """Get data quality configuration."""
+        return self._config.get('quality', {})
+    
+    def get_monitoring_config(self) -> Dict[str, Any]:
+        """Get monitoring configuration."""
+        return self._config.get('monitoring', {})
+    
+    def get_performance_config(self) -> Dict[str, Any]:
+        """Get performance tuning configuration."""
+        return self._config.get('performance', {})
+    
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set configuration value (for testing/override purposes).
+        
+        Args:
+            key: Configuration key in dot notation
+            value: Value to set
+        """
+        keys = key.split('.')
         config = self._config
         
-        for key in keys[:-1]:
-            if key not in config:
-                config[key] = {}
-            config = config[key]
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            config = config[k]
         
         config[keys[-1]] = value
     
-    def get_database_config(self) -> Dict[str, Any]:
-        """Get database configuration"""
-        return self.get_section('database')
-    
-    def get_source_config(self) -> Dict[str, Any]:
-        """Get source configuration"""
-        return self.get_section('source')
-    
-    def get_target_config(self) -> Dict[str, Any]:
-        """Get target configuration"""
-        return self.get_section('target')
-    
-    def get_spark_config(self) -> Dict[str, str]:
-        """Get Spark-specific configuration"""
-        db_config = self.get_database_config()
+    def reload(self, config_path: Optional[str] = None) -> None:
+        """
+        Reload configuration from file.
         
-        return {
-            'spark.app.name': 'ETL Framework',
-            'spark.sql.adaptive.enabled': 'true',
-            'spark.sql.adaptive.coalescePartitions.enabled': 'true',
-            'spark.driver.memory': '4g',
-            'spark.executor.memory': '4g',
-            'spark.sql.shuffle.partitions': '200'
-        }
-    
-    def is_feature_enabled(self, feature: str) -> bool:
-        """Check if a feature flag is enabled"""
-        return self.get(f'features.{feature}', False)
-    
-    def get_batch_size(self) -> int:
-        """Get configured batch size"""
-        return self.get('target.batch_size', 1000)
-    
-    def get_log_level(self) -> str:
-        """Get logging level"""
-        return self.get('logging.level', 'INFO')
-    
-    def reload(self) -> None:
-        """Reload configuration from file"""
+        Args:
+            config_path: Path to configuration file
+        """
         self._config = {}
-        self.load_config()
+        self._load_config(config_path)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Return complete configuration as dictionary."""
+        return self._config.copy()
 
 
 # Global configuration instance
