@@ -1,80 +1,100 @@
-# ETL Configuration
+# ETL Test Framework Configuration
 
 # Spark Configuration
 spark:
-  app_name: "ETL_Orchestrator"
-  master: "local[*]"
-  config:
-    spark.sql.shuffle.partitions: 200
+  app_name: "etl_test_framework"
+  master: "local[2]"
+  configs:
+    spark.sql.shuffle.partitions: 2
+    spark.default.parallelism: 2
+    spark.ui.enabled: false
+    spark.driver.memory: "1g"
     spark.sql.adaptive.enabled: true
-    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
 
-# Source Configuration
-source:
-  type: "DATABASE"
-  database: "etl_source_db"
-  table: "etl_source_data"
-  filter: null
-  max_records: 0
+# Test Data Generation
+test_data:
+  default_record_count: 100
+  include_nulls: false
+  include_duplicates: false
+  include_invalid: false
+  categories:
+    - PREMIUM
+    - STANDARD
+    - BASIC
+    - VIP
+    - TRIAL
+  value_range:
+    min: 50
+    max: 1000
 
-# Target Configuration
-target:
-  type: "DATABASE"
-  database: "etl_target_db"
-  table: "etl_target_data"
-  mode: "UPSERT"
-
-# Processing Configuration
-processing:
-  batch_size: 1000
+# Test Execution
+test_execution:
+  batch_size: 100
   max_retries: 3
-  retry_delay_seconds: 5
-  enable_validation: true
-  enable_reconciliation: true
+  timeout_seconds: 300
+  enable_parallel: false
 
-# Transformation Rules
-transformation:
-  premium_multiplier: 1.5
-  standard_multiplier: 1.2
-  vip_multiplier: 2.0
-  basic_multiplier: 1.0
-
-# Quality Checks
-quality:
-  enabled: true
-  check_completeness: true
-  check_uniqueness: true
-  check_validity: true
-  check_consistency: true
-  fail_on_quality_issues: false
-
-# Monitoring
-monitoring:
-  enabled: true
-  alert_on_failure: true
-  alert_email: "admin@example.com"
-  health_check_interval_seconds: 300
+# Test Data Storage
+storage:
+  format: "parquet"
+  temp_dir: "/tmp/spark_test"
+  cleanup_on_exit: true
 
 # Logging
 logging:
   level: "INFO"
-  retention_days: 90
-  log_to_file: true
-  log_directory: "/var/log/etl"
+  log_to_file: false
+  log_dir: "logs/test"
 
-# Run Types
-run_types:
-  - MANUAL
-  - SCHEDULED
-  - TEST
-  - INCREMENTAL
+# Assertions
+assertions:
+  strict_schema_validation: true
+  enable_row_comparison: true
+  compare_decimals_precision: 2
 
-# Status Values
-statuses:
-  - RUNNING
-  - SUCCESS
-  - FAILED
-  - PARTIAL_SUCCESS
-  - ERROR
-  - NO_DATA
-  - VALIDATION_FAILED
+# Mock Data Sources
+mock_sources:
+  database:
+    enabled: true
+    auto_register: true
+  
+  staging:
+    enabled: true
+    auto_register: true
+
+# Quality Checks
+quality_checks:
+  completeness:
+    enabled: true
+    critical_fields:
+      - id
+      - name
+      - value
+  
+  uniqueness:
+    enabled: true
+    key_fields:
+      - id
+  
+  validity:
+    enabled: true
+    rules:
+      - field: value
+        min: 0
+      - field: priority
+        min: 1
+        max: 5
+
+# Test Scenarios
+scenarios:
+  unit_test:
+    record_count: 10
+    batch_size: 5
+  
+  integration_test:
+    record_count: 100
+    batch_size: 50
+  
+  load_test:
+    record_count: 10000
+    batch_size: 1000
