@@ -1,166 +1,99 @@
+# ETL Configuration File
+
+# Source Configuration
+source:
+  system_name: "SAP_ERP"
+  
+  database:
+    path: "data/source/etl_source_data"
+    format: "parquet"
+    
+  staging:
+    path: "data/staging/etl_staging"
+    format: "parquet"
+
+# Target Configuration
+target:
+  database:
+    path: "data/target/etl_target_data"
+    format: "parquet"
+
+# Transformation Configuration
+transformation:
+  # Value multipliers by category
+  value_multipliers:
+    PREMIUM: 1.5
+    VIP: 2.0
+    STANDARD: 1.2
+    BASIC: 1.0
+    TRIAL: 0.8
+  
+  # Valid categories
+  valid_categories:
+    - PREMIUM
+    - VIP
+    - STANDARD
+    - BASIC
+    - TRIAL
+  
+  # Premium bonus settings
+  premium_bonus_enabled: true
+  premium_bonus: 0.2
+  
+  # Priority thresholds
+  priority_thresholds:
+    critical: 1000
+    high: 750
+    medium: 300
+    low: 100
+  
+  # Outlier detection
+  flag_outliers: true
+  max_value_threshold: 10000
+
+# Loading Configuration
+loading:
+  batch_size: 1000
+  enable_reconciliation: true
+  mode: "upsert"  # insert, update, upsert
+
+# Metadata Configuration
+metadata:
+  run_log_path: "data/metadata/run_log"
+  error_log_path: "data/metadata/error_log"
+
 # Data Quality Configuration
-
-spark:
-  app_name: "DataQualityValidation"
-  master: "local[*]"
-  config:
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
-    spark.sql.shuffle.partitions: 200
-    spark.executor.memory: "4g"
-    spark.driver.memory: "2g"
-
 data_quality:
-  # Critical fields that must not be null
-  critical_fields:
-    - id
-    - name
-    - value
-    - category
-  
-  # Field used for uniqueness checks
-  id_field: "id"
-  
-  # Validation rules
-  validation_rules:
-    positive_fields:
-      - value
-      - transformed_value
-    priority_range:
-      min: 1
-      max: 5
-    required_fields:
-      - id
-      - name
-      - status
-      - category
-  
-  # Thresholds for validation
-  thresholds:
-    record_count:
-      min: 10
-      max: 1000000
-      expected: 100000
-      tolerance_percent: 10.0
-    
-    null_percentage:
-      max: 5.0  # Maximum 5% null values
-    
-    duplicate_percentage:
-      max: 1.0  # Maximum 1% duplicates
-    
-    error_rate:
-      max: 5.0  # Maximum 5% error rate
-    
-    completeness:
-      min: 95.0  # Minimum 95% completeness
-  
-  # Anomaly detection settings
-  anomaly_detection:
-    enabled: true
-    std_threshold: 3.0  # Number of standard deviations
-    outlier_percentage_threshold: 5.0
+  enable_checks: true
+  checks:
+    completeness: true
+    uniqueness: true
+    validity: true
+    consistency: true
   
   # Profiling settings
-  profiling:
-    enabled: true
-    sample_size: 10000  # Sample size for profiling
-    generate_histograms: true
-    histogram_buckets: 20
+  enable_profiling: true
+  enable_anomaly_detection: true
+  std_deviation_threshold: 3.0
 
-# Data source configuration
-data_sources:
-  source_table: "etl_source_data"
-  target_table: "etl_target_data"
-  staging_table: "etl_staging"
-  
-  # Schema definitions
-  source_schema:
-    - name: "id"
-      type: "string"
-      nullable: false
-    - name: "name"
-      type: "string"
-      nullable: false
-    - name: "value"
-      type: "double"
-      nullable: false
-    - name: "status"
-      type: "string"
-      nullable: true
-    - name: "category"
-      type: "string"
-      nullable: false
-    - name: "source_system"
-      type: "string"
-      nullable: true
-    - name: "created_at"
-      type: "timestamp"
-      nullable: true
+# Performance Configuration
+performance:
+  shuffle_partitions: 200
+  default_parallelism: 8
+  max_records_per_partition: 100000
 
-  target_schema:
-    - name: "id"
-      type: "string"
-      nullable: false
-    - name: "name"
-      type: "string"
-      nullable: false
-    - name: "value"
-      type: "double"
-      nullable: false
-    - name: "transformed_value"
-      type: "double"
-      nullable: false
-    - name: "status"
-      type: "string"
-      nullable: false
-    - name: "category"
-      type: "string"
-      nullable: false
-    - name: "priority"
-      type: "integer"
-      nullable: false
-    - name: "etl_run_id"
-      type: "string"
-      nullable: false
-    - name: "processed_at"
-      type: "timestamp"
-      nullable: false
+# Monitoring Configuration
+monitoring:
+  enable_monitoring: true
+  dashboard_retention_days: 30
+  alert_email: "admin@example.com"
+  alert_on_failure: true
 
-# Logging configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/data_quality.log"
-  max_bytes: 10485760  # 10MB
-  backup_count: 5
-
-# Alert configuration
-alerts:
-  enabled: true
-  email:
-    smtp_server: "smtp.example.com"
-    smtp_port: 587
-    from_address: "etl-alerts@example.com"
-    to_addresses:
-      - "admin@example.com"
-      - "data-team@example.com"
-  
-  slack:
-    enabled: false
-    webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-  
-  # Conditions for sending alerts
-  conditions:
-    - check_type: "COMPLETENESS"
-      severity: "CRITICAL"
-    - check_type: "THRESHOLD"
-      severity: "CRITICAL"
-    - error_rate_threshold: 10.0
-
-# Reporting configuration
-reporting:
-  output_path: "reports/quality_reports"
-  format: "json"  # json, html, or csv
-  include_details: true
-  generate_charts: false
+# Spark Configuration
+spark:
+  app_name: "ETL_Transformation_Engine"
+  master: "local[*]"
+  log_level: "INFO"
+  config:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
