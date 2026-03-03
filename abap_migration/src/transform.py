@@ -1,304 +1,248 @@
 """
 ETL Data Transformation Module
-
-This module handles data transformations including business rules,
-data enrichment, validation, and derived calculations.
+Applies business rules, enrichment, and validation to extracted data
 """
-
-from pyspark.sql import DataFrame
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, upper, trim, regexp_replace, when, lit, current_timestamp,
-    current_user, coalesce
+    current_user, udf, monotonically_increasing_id
 )
-from pyspark.sql.types import DecimalType, IntegerType
-from typing import List, Tuple, Dict, Any
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType, IntegerType
+from typing import List, Tuple
 import logging
-
-logger = logging.getLogger(__name__)
 
 
 class ETLTransformer:
     """
-    Handles data transformation, validation, and enrichment.
+    Handles data transformation, business rule application, and validation
     """
     
-    def __init__(self, run_id: str):
+    def __init__(self, spark: SparkSession, run_id: str):
         """
-        Initialize the transformer.
+        Initialize transformer with Spark session
         
         Args:
+            spark: Active SparkSession
             run_id: Unique run identifier
         """
+        self.spark = spark
         self.run_id = run_id
-        logger.info(f"ETLTransformer initialized - Run ID: {run_id}")
+        self.logger = logging.getLogger(__name__)
     
-    def transform_data(self, df: DataFrame, config: Dict[str, Any]) -> DataFrame:
+    def get_transformed_schema(self) -> StructType:
         """
-        Main transformation method that applies all transformation logic.
+        Define schema for transformed data
+        
+        Returns:
+            StructType schema definition
+        """
+        return StructType([
+            StructField("id", StringType(), False),
+            StructField("name", StringType(), True),
+            StructField("value", DecimalType(15, 2), True),
+            StructField("transformed_value", DecimalType(15, 2), True),
+            StructField("status", StringType(), True),
+            StructField("category", StringType(), True),
+            StructField("priority", IntegerType(), True),
+            StructField("etl_run_id", StringType(), True),
+            StructField("processed_at", TimestampType(), True),
+            StructField("processed_by", StringType(), True)
+        ])
+    
+    def transform_data(self, source_df: DataFrame) -> DataFrame:
+        """
+        Main transformation pipeline
         
         Args:
-            df: Source DataFrame
-            config: Configuration dictionary
+            source_df: Source DataFrame from extraction
             
         Returns:
             Transformed DataFrame
         """
-        logger.info("Starting transformation")
+        self.logger.info("Starting data transformation")
         
-        # Step 1: Basic transformations
-        df_transformed = self._apply_basic_transformations(df)
-        
-        # Step 2: Calculate derived values
-        df_transformed = self._calculate_derived_values(df_transformed, config)
-        
-        # Step 3: Calculate priority
-        df_transformed = self._calculate_priority(df_transformed)
-        
-        # Step 4: Apply business rules
-        df_transformed = self._apply_business_rules(df_transformed)
-        
-        # Step 5: Apply category-specific rules
-        df_transformed = self._apply_category_rules(df_transformed, config)
-        
-        # Step 6: Enrich data
-        df_transformed = self._enrich_data(df_transformed, config)
-        
-        # Step 7: Add ETL metadata
-        df_transformed = self._add_etl_metadata(df_transformed)
-        
-        record_count = df_transformed.count()
-        logger.info(f"Transformed {record_count} records")
-        
-        return df_transformed
-    
-    def _apply_basic_transformations(self, df: DataFrame) -> DataFrame:
-        """
-        Apply basic data cleaning and formatting.
-        
-        Args:
-            df: Input DataFrame
-            
-        Returns:
-            Cleaned DataFrame
-        """
-        logger.info("Applying basic transformations")
-        
-        return df.select(
+        # Initial transformations
+        df = source_df.select(
             col("id"),
-            # Clean and normalize name
             upper(trim(regexp_replace(col("name"), "\\s+", " "))).alias("name"),
             col("value"),
-            col("status"),
-            coalesce(col("category"), lit("UNCATEGORIZED")).alias("category"),
-            col("source_system"),
-            col("created_at"),
-            col("created_by"),
-            col("changed_at"),
-            col("changed_by")
+            self._calculate_derived_value(col("value"), col("category")).alias("transformed_value"),
+            lit("TRANSFORMED").alias("status"),
+            col("category"),
+            self._calculate_priority(col("value"), col("category")).alias("priority"),
+            lit(self.run_id).alias("etl_run_id"),
+            current_timestamp().alias("processed_at"),
+            current_user().alias("processed_by")
         )
-    
-    def _calculate_derived_values(self, df: DataFrame, config: Dict[str, Any]) -> DataFrame:
-        """
-        Calculate transformed values based on business logic.
         
-        Args:
-            df: Input DataFrame
-            config: Configuration with multipliers
-            
-        Returns:
-            DataFrame with transformed_value column
-        """
-        logger.info("Calculating derived values")
+        # Apply business rules
+        df = self.apply_business_rules(df)
         
-        # Get multipliers from config
-        premium_multiplier = float(config.get("premium_multiplier", 1.5))
-        standard_multiplier = float(config.get("standard_multiplier", 1.2))
+        # Enrich data
+        df = self.enrich_data(df)
         
-        df = df.withColumn(
-            "transformed_value",
-            when(col("category") == "PREMIUM", col("value") * premium_multiplier)
-            .when(col("category") == "STANDARD", col("value") * standard_multiplier)
-            .otherwise(col("value"))
-        )
+        record_count = df.count()
+        self.logger.info(f"Transformed {record_count} records")
         
         return df
     
-    def _calculate_priority(self, df: DataFrame) -> DataFrame:
+    def _calculate_derived_value(self, value_col, category_col):
         """
-        Calculate priority based on value and category.
+        Calculate derived/transformed value based on business rules
         
         Args:
-            df: Input DataFrame
+            value_col: Value column
+            category_col: Category column
             
         Returns:
-            DataFrame with priority column
+            Column expression for transformed value
         """
-        logger.info("Calculating priority")
-        
-        df = df.withColumn(
-            "priority",
-            when((col("transformed_value") >= 1000) | (col("category") == "VIP"), lit(1))
-            .when(col("transformed_value") >= 750, lit(2))
-            .when(col("transformed_value") >= 500, lit(3))
-            .when(col("transformed_value") >= 250, lit(4))
-            .otherwise(lit(5))
-            .cast(IntegerType())
-        )
-        
-        return df
+        return when(category_col == "PREMIUM", value_col * 1.5) \
+            .when(category_col == "VIP", value_col * 2.0) \
+            .when(category_col == "STANDARD", value_col * 1.2) \
+            .when(category_col == "BASIC", value_col * 1.0) \
+            .when(category_col == "TRIAL", value_col * 0.8) \
+            .otherwise(value_col)
     
-    def _apply_business_rules(self, df: DataFrame) -> DataFrame:
+    def _calculate_priority(self, value_col, category_col):
         """
-        Apply business rules to set status and classifications.
+        Calculate priority based on value and category
         
         Args:
-            df: Input DataFrame
+            value_col: Value column
+            category_col: Category column
+            
+        Returns:
+            Column expression for priority (1-5)
+        """
+        return when(value_col >= 1000, 1) \
+            .when((value_col >= 750) | (category_col == "PREMIUM"), 2) \
+            .when((value_col >= 500) | (category_col == "VIP"), 2) \
+            .when(value_col >= 300, 3) \
+            .when(value_col >= 100, 4) \
+            .otherwise(5)
+    
+    def apply_business_rules(self, df: DataFrame) -> DataFrame:
+        """
+        Apply business rules to transformed data
+        
+        Args:
+            df: DataFrame to apply rules to
             
         Returns:
             DataFrame with business rules applied
         """
-        logger.info("Applying business rules")
+        self.logger.info("Applying business rules")
         
+        # Rule 1: Set status based on value
         df = df.withColumn(
             "status",
-            when(col("value").isNull() | (col("value") == 0), lit("INVALID"))
-            .when(col("transformed_value") >= 750, lit("HIGH_VALUE"))
-            .when(col("transformed_value") >= 300, lit("MEDIUM_VALUE"))
-            .otherwise(lit("LOW_VALUE"))
+            when(col("value").isNull(), "INVALID")
+            .when(col("transformed_value") >= 750, "HIGH_VALUE")
+            .when(col("transformed_value") >= 300, "MEDIUM_VALUE")
+            .otherwise("LOW_VALUE")
         )
         
-        return df
-    
-    def _apply_category_rules(self, df: DataFrame, config: Dict[str, Any]) -> DataFrame:
-        """
-        Apply category-specific transformation rules.
-        
-        Args:
-            df: Input DataFrame
-            config: Configuration
-            
-        Returns:
-            DataFrame with category rules applied
-        """
-        logger.info("Applying category-specific rules")
-        
-        # Override priority for premium and VIP categories
+        # Rule 2: Priority override for high value items
         df = df.withColumn(
             "priority",
-            when((col("category") == "PREMIUM") & (col("transformed_value") >= 1000), lit(1))
-            .when(col("category") == "VIP", lit(1))
+            when(col("transformed_value") >= 1000, 1)
             .otherwise(col("priority"))
         )
         
+        # Rule 3: Category validation
+        df = df.withColumn(
+            "category",
+            when(col("category").isNull() | (trim(col("category")) == ""), "UNCATEGORIZED")
+            .otherwise(col("category"))
+        )
+        
+        # Rule 4: Ensure name is properly formatted
+        df = df.withColumn(
+            "name",
+            regexp_replace(trim(col("name")), "\\s+", " ")
+        )
+        
         return df
     
-    def _enrich_data(self, df: DataFrame, config: Dict[str, Any]) -> DataFrame:
+    def enrich_data(self, df: DataFrame) -> DataFrame:
         """
-        Enrich data with additional calculated fields and lookups.
+        Enrich data with additional calculated fields
         
         Args:
-            df: Input DataFrame
-            config: Configuration
+            df: DataFrame to enrich
             
         Returns:
             Enriched DataFrame
         """
-        logger.info("Enriching data")
+        self.logger.info("Enriching data")
         
-        # Add value tier classification
-        df = df.withColumn(
-            "value_tier",
-            when(col("transformed_value") >= 1000, lit("TIER_1"))
-            .when(col("transformed_value") >= 500, lit("TIER_2"))
-            .when(col("transformed_value") >= 250, lit("TIER_3"))
-            .otherwise(lit("TIER_4"))
+        # Load enrichment configuration
+        config_multiplier = float(
+            self.spark.conf.get("spark.etl.premium.multiplier", "1.2")
         )
         
-        # Add processing flags
+        # Apply premium multiplier if configured
         df = df.withColumn(
-            "requires_review",
-            when((col("status") == "HIGH_VALUE") & (col("priority") == 1), lit(True))
-            .otherwise(lit(False))
+            "transformed_value",
+            when(col("category") == "PREMIUM", col("transformed_value") * config_multiplier)
+            .otherwise(col("transformed_value"))
         )
         
         return df
     
-    def _add_etl_metadata(self, df: DataFrame) -> DataFrame:
-        """
-        Add ETL processing metadata to records.
-        
-        Args:
-            df: Input DataFrame
-            
-        Returns:
-            DataFrame with ETL metadata
-        """
-        logger.info("Adding ETL metadata")
-        
-        return df \
-            .withColumn("etl_run_id", lit(self.run_id)) \
-            .withColumn("processed_at", current_timestamp()) \
-            .withColumn("processed_by", lit("spark_etl"))
-    
     def validate_data(self, df: DataFrame) -> Tuple[bool, List[str]]:
         """
-        Validate transformed data against business rules.
+        Validate transformed data against business rules
         
         Args:
-            df: Transformed DataFrame
+            df: DataFrame to validate
             
         Returns:
-            Tuple of (is_valid, list of validation errors)
+            Tuple of (is_valid, list of error messages)
         """
-        logger.info("Validating transformed data")
+        self.logger.info("Validating transformed data")
         
         errors = []
         
-        # Validation 1: Check for null IDs
-        null_id_count = df.filter(col("id").isNull()).count()
+        # Rule 1: ID is required
+        null_id_count = df.filter(col("id").isNull() | (trim(col("id")) == "")).count()
         if null_id_count > 0:
-            errors.append(f"{null_id_count} records with null IDs")
+            errors.append(f"{null_id_count} records with missing ID")
         
-        # Validation 2: Check for null names
-        null_name_count = df.filter(col("name").isNull() | (col("name") == "")).count()
+        # Rule 2: Name is required
+        null_name_count = df.filter(col("name").isNull() | (trim(col("name")) == "")).count()
         if null_name_count > 0:
-            errors.append(f"{null_name_count} records with null or empty names")
+            errors.append(f"{null_name_count} records with missing name")
         
-        # Validation 3: Check for negative values
-        negative_value_count = df.filter((col("value") < 0) | (col("transformed_value") < 0)).count()
+        # Rule 3: Value must be positive
+        negative_value_count = df.filter(
+            (col("value") < 0) | (col("transformed_value") < 0)
+        ).count()
         if negative_value_count > 0:
             errors.append(f"{negative_value_count} records with negative values")
         
-        # Validation 4: Check priority range
-        invalid_priority_count = df.filter((col("priority") < 1) | (col("priority") > 5)).count()
+        # Rule 4: Priority must be 1-5
+        invalid_priority_count = df.filter(
+            (col("priority") < 1) | (col("priority") > 5)
+        ).count()
         if invalid_priority_count > 0:
             errors.append(f"{invalid_priority_count} records with invalid priority")
         
-        # Validation 5: Check for empty categories
-        empty_category_count = df.filter(col("category").isNull() | (col("category") == "")).count()
-        if empty_category_count > 0:
-            errors.append(f"{empty_category_count} records with empty categories")
+        # Rule 5: Category must not be empty
+        null_category_count = df.filter(
+            col("category").isNull() | (trim(col("category")) == "")
+        ).count()
+        if null_category_count > 0:
+            errors.append(f"{null_category_count} records with missing category")
         
         is_valid = len(errors) == 0
         
         if is_valid:
-            logger.info("Validation passed")
+            self.logger.info("Validation passed")
         else:
-            logger.warning(f"Validation failed with {len(errors)} errors")
+            self.logger.error(f"Validation failed with {len(errors)} errors")
             for error in errors:
-                logger.warning(f"  - {error}")
+                self.logger.error(f"  - {error}")
         
         return is_valid, errors
-
-
-def create_transformer(run_id: str) -> ETLTransformer:
-    """
-    Factory function to create an ETLTransformer instance.
-    
-    Args:
-        run_id: Run identifier
-        
-    Returns:
-        ETLTransformer instance
-    """
-    return ETLTransformer(run_id)
