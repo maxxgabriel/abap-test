@@ -1,0 +1,18 @@
+@EndUserText.label : 'ETL Source Data Table'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #A
+@AbapCatalog.dataMaintenance : #ALLOWED
+define table zetl_source_data {
+  key client      : abap.clnt not null;
+  key id          : abap.char(10) not null;
+  name            : abap.char(100);
+  value           : abap.dec(15,2);
+  status          : abap.char(20);
+  category        : abap.char(50);
+  source_system   : abap.char(20);
+  created_at      : abap.dec(15,0);
+  created_by      : abap.char(12);
+  changed_at      : abap.dec(15,0);
+  changed_by      : abap.char(12);
+}

@@ -1,0 +1,15 @@
+@EndUserText.label : 'ETL Staging Table'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #A
+@AbapCatalog.dataMaintenance : #ALLOWED
+define table zetl_staging {
+  key client      : abap.clnt not null;
+  key id          : abap.char(10) not null;
+  key run_id      : abap.char(20) not null;
+  raw_data        : abap.string(0);
+  parsed_data     : abap.string(0);
+  status          : abap.char(20);
+  error_message   : abap.string(0);
+  created_at      : abap.dec(15,0);
+}

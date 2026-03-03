@@ -1,0 +1,23 @@
+@EndUserText.label : 'ETL Run Log Table'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #A
+@AbapCatalog.dataMaintenance : #ALLOWED
+define table zetl_run_log {
+  key client          : abap.clnt not null;
+  key run_id          : abap.char(20) not null;
+  run_type            : abap.char(20);
+  status              : abap.char(20);
+  start_time          : abap.dec(15,0);
+  end_time            : abap.dec(15,0);
+  duration            : abap.int4;
+  records_extracted   : abap.int4;
+  records_transformed : abap.int4;
+  records_loaded      : abap.int4;
+  records_failed      : abap.int4;
+  error_count         : abap.int4;
+  warning_count       : abap.int4;
+  started_by          : abap.char(12);
+  job_name            : abap.char(32);
+  job_count           : abap.char(8);
+}

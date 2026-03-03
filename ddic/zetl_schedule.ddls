@@ -1,0 +1,22 @@
+@EndUserText.label : 'ETL Schedule Table'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #C
+@AbapCatalog.dataMaintenance : #ALLOWED
+define table zetl_schedule {
+  key client          : abap.clnt not null;
+  key schedule_id     : abap.char(20) not null;
+  schedule_name       : abap.char(100);
+  etl_type            : abap.char(20);
+  frequency           : abap.char(20);
+  start_date          : abap.dats;
+  start_time          : abap.tims;
+  end_date            : abap.dats;
+  is_active           : abap.char(1);
+  last_run            : abap.dec(15,0);
+  next_run            : abap.dec(15,0);
+  job_name            : abap.char(32);
+  parameters          : abap.string(0);
+  created_by          : abap.char(12);
+  created_at          : abap.dec(15,0);
+}

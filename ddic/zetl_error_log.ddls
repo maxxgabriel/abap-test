@@ -1,0 +1,21 @@
+@EndUserText.label : 'ETL Error Log Table'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #A
+@AbapCatalog.dataMaintenance : #ALLOWED
+define table zetl_error_log {
+  key client      : abap.clnt not null;
+  key error_id    : abap.char(20) not null;
+  run_id          : abap.char(20);
+  error_type      : abap.char(20);
+  severity        : abap.char(10);
+  component       : abap.char(50);
+  record_id       : abap.char(10);
+  error_message   : abap.string(0);
+  error_details   : abap.string(0);
+  stack_trace     : abap.string(0);
+  created_at      : abap.dec(15,0);
+  resolved        : abap.char(1);
+  resolved_at     : abap.dec(15,0);
+  resolved_by     : abap.char(12);
+}

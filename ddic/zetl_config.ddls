@@ -1,0 +1,15 @@
+@EndUserText.label : 'ETL Configuration Table'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #C
+@AbapCatalog.dataMaintenance : #ALLOWED
+define table zetl_config {
+  key client      : abap.clnt not null;
+  key config_key  : abap.char(50) not null;
+  config_value    : abap.string(0);
+  description     : abap.string(0);
+  config_type     : abap.char(20);
+  is_active       : abap.char(1);
+  changed_at      : abap.dec(15,0);
+  changed_by      : abap.char(12);
+}
