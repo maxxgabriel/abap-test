@@ -1,26 +1,29 @@
 """
 PySpark Data Extraction Module with Incremental Load Support
-Handles extraction from various source systems with filtering and delta processing
+Implements DataFrame-based extraction with filtering logic for delta processing
 """
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType
+from pyspark.sql import functions as F
 from datetime import datetime
 from typing import Optional, Dict, Any
 import logging
 
 
-class DataExtractor:
-    """Extract data from source systems with incremental load capabilities"""
+class SparkExtractor:
+    """
+    Handles data extraction from various sources with incremental load support
+    """
     
     def __init__(self, spark: SparkSession, config: Dict[str, Any], run_id: str):
         """
-        Initialize the data extractor
+        Initialize extractor with Spark session and configuration
         
         Args:
             spark: Active SparkSession
             config: Configuration dictionary
-            run_id: Unique identifier for this ETL run
+            run_id: Unique run identifier
         """
         self.spark = spark
         self.config = config
@@ -29,51 +32,51 @@ class DataExtractor:
         
     def get_source_schema(self) -> StructType:
         """
-        Define the schema for source data
+        Define schema for source data
         
         Returns:
             StructType schema definition
         """
         return StructType([
-            StructField("id", StringType(), False),
-            StructField("name", StringType(), True),
-            StructField("value", DecimalType(15, 2), True),
-            StructField("status", StringType(), True),
-            StructField("category", StringType(), True),
-            StructField("source_system", StringType(), True),
-            StructField("created_at", TimestampType(), True),
-            StructField("created_by", StringType(), True),
-            StructField("changed_at", TimestampType(), True),
-            StructField("changed_by", StringType(), True),
+            StructField("id", StringType(), nullable=False),
+            StructField("name", StringType(), nullable=False),
+            StructField("value", DecimalType(15, 2), nullable=False),
+            StructField("status", StringType(), nullable=True),
+            StructField("category", StringType(), nullable=True),
+            StructField("source_system", StringType(), nullable=True),
+            StructField("created_at", TimestampType(), nullable=True),
+            StructField("created_by", StringType(), nullable=True),
+            StructField("changed_at", TimestampType(), nullable=True),
+            StructField("changed_by", StringType(), nullable=True)
         ])
     
     def extract_data(
         self,
-        source_type: str = "DATABASE",
+        source_type: str = "database",
         filter_condition: Optional[str] = None,
         max_records: int = 0
     ) -> DataFrame:
         """
-        Main extraction method that routes to appropriate extraction logic
+        Main extraction method routing to appropriate source handler
         
         Args:
-            source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
-            filter_condition: Optional SQL filter condition
-            max_records: Maximum number of records to extract (0 = no limit)
+            source_type: Type of source (database, staging, incremental)
+            filter_condition: Optional filter string
+            max_records: Maximum records to extract (0 = unlimited)
             
         Returns:
-            Extracted DataFrame
+            DataFrame with extracted data
         """
         self.logger.info(f"Starting extraction - Source: {source_type}, Run ID: {self.run_id}")
         
-        if source_type == "DATABASE":
+        if source_type.lower() == "database":
             df = self._extract_from_database(filter_condition)
-        elif source_type == "STAGING":
+        elif source_type.lower() == "staging":
             df = self._extract_from_staging()
-        elif source_type == "INCREMENTAL":
+        elif source_type.lower() == "incremental":
             df = self._extract_incremental()
         else:
-            self.logger.warning(f"Unknown source type {source_type}, defaulting to DATABASE")
+            self.logger.warning(f"Unknown source type: {source_type}, defaulting to database")
             df = self._extract_from_database(filter_condition)
         
         # Apply max records limit if specified
@@ -90,37 +93,35 @@ class DataExtractor:
         Extract data from database source
         
         Args:
-            filter_condition: Optional SQL filter condition
+            filter_condition: SQL WHERE clause condition
             
         Returns:
-            DataFrame with extracted data
+            DataFrame with database records
         """
-        source_config = self.config['source']['database']
+        self.logger.info("Extracting from database source")
         
-        # Build JDBC URL
-        jdbc_url = (
-            f"jdbc:{source_config['type']}://"
-            f"{source_config['host']}:{source_config['port']}/"
-            f"{source_config['database']}"
-        )
+        jdbc_config = self.config.get("database", {})
+        table_name = jdbc_config.get("source_table", "etl_source_data")
         
-        # Base read options
-        read_options = {
-            "url": jdbc_url,
-            "dbtable": source_config['table'],
-            "user": source_config['user'],
-            "password": source_config['password'],
-            "driver": source_config['driver']
-        }
+        # Build query
+        query = f"(SELECT * FROM {table_name}"
         
-        # Add filter if provided
         if filter_condition:
-            query = f"(SELECT * FROM {source_config['table']} WHERE {filter_condition}) as filtered_data"
-            read_options['dbtable'] = query
+            query += f" WHERE {filter_condition}"
         
-        self.logger.info(f"Reading from database: {source_config['table']}")
+        query += ") as source_data"
         
-        df = self.spark.read.format("jdbc").options(**read_options).load()
+        df = self.spark.read \
+            .format("jdbc") \
+            .option("url", jdbc_config.get("url")) \
+            .option("dbtable", query) \
+            .option("user", jdbc_config.get("user")) \
+            .option("password", jdbc_config.get("password")) \
+            .option("driver", jdbc_config.get("driver", "org.postgresql.Driver")) \
+            .load()
+        
+        # Ensure schema compliance
+        df = self._apply_schema_transformations(df)
         
         return df
     
@@ -129,20 +130,25 @@ class DataExtractor:
         Extract data from staging area
         
         Returns:
-            DataFrame with staged data
+            DataFrame with staging records
         """
-        staging_config = self.config['source']['staging']
-        staging_path = staging_config['path']
+        self.logger.info(f"Extracting from staging - Run ID: {self.run_id}")
         
-        self.logger.info(f"Reading from staging: {staging_path}")
+        staging_config = self.config.get("staging", {})
+        staging_path = staging_config.get("path", "/data/staging")
         
-        # Read from staging (assuming parquet format)
-        df = (self.spark.read
-              .format(staging_config.get('format', 'parquet'))
-              .load(f"{staging_path}/run_id={self.run_id}"))
+        # Read from staging path (could be parquet, CSV, etc.)
+        file_format = staging_config.get("format", "parquet")
         
-        # Filter for ready records
-        df = df.filter(df.status == 'READY')
+        df = self.spark.read \
+            .format(file_format) \
+            .option("header", "true") \
+            .load(f"{staging_path}/run_id={self.run_id}")
+        
+        # Filter for ready status
+        df = df.filter(F.col("status") == "READY")
+        
+        df = self._apply_schema_transformations(df)
         
         return df
     
@@ -151,117 +157,91 @@ class DataExtractor:
         Extract only changed records since last successful run
         
         Returns:
-            DataFrame with incremental data
+            DataFrame with incremental records
         """
-        self.logger.info("Performing incremental extraction")
+        self.logger.info("Extracting incremental data")
         
-        # Get last successful run timestamp from run log
-        last_run_time = self._get_last_run_time()
+        # Get last successful run timestamp
+        last_run_time = self._get_last_run_timestamp()
         
         if last_run_time is None:
-            self.logger.warning("No previous run found, performing full extraction")
+            self.logger.warning("No previous run found, performing full extract")
             return self._extract_from_database()
         
         self.logger.info(f"Extracting records changed after: {last_run_time}")
         
-        source_config = self.config['source']['database']
+        jdbc_config = self.config.get("database", {})
+        table_name = jdbc_config.get("source_table", "etl_source_data")
         
-        jdbc_url = (
-            f"jdbc:{source_config['type']}://"
-            f"{source_config['host']}:{source_config['port']}/"
-            f"{source_config['database']}"
-        )
+        # Query for changed records
+        query = f"""(
+            SELECT * FROM {table_name}
+            WHERE changed_at > '{last_run_time}'
+        ) as incremental_data"""
         
-        # Query only changed records
-        query = (
-            f"(SELECT * FROM {source_config['table']} "
-            f"WHERE changed_at > TIMESTAMP '{last_run_time}') as incremental_data"
-        )
+        df = self.spark.read \
+            .format("jdbc") \
+            .option("url", jdbc_config.get("url")) \
+            .option("dbtable", query) \
+            .option("user", jdbc_config.get("user")) \
+            .option("password", jdbc_config.get("password")) \
+            .option("driver", jdbc_config.get("driver", "org.postgresql.Driver")) \
+            .load()
         
-        df = (self.spark.read
-              .format("jdbc")
-              .option("url", jdbc_url)
-              .option("dbtable", query)
-              .option("user", source_config['user'])
-              .option("password", source_config['password'])
-              .option("driver", source_config['driver'])
-              .load())
+        df = self._apply_schema_transformations(df)
         
         return df
     
-    def _get_last_run_time(self) -> Optional[str]:
+    def _get_last_run_timestamp(self) -> Optional[str]:
         """
-        Retrieve the timestamp of the last successful ETL run
+        Retrieve timestamp of last successful ETL run
         
         Returns:
-            Timestamp string or None if no previous run
+            Timestamp string or None if no previous runs
         """
+        jdbc_config = self.config.get("database", {})
+        
         try:
-            log_config = self.config['logging']['database']
+            run_log_df = self.spark.read \
+                .format("jdbc") \
+                .option("url", jdbc_config.get("url")) \
+                .option("dbtable", "(SELECT MAX(end_time) as last_run FROM etl_run_log WHERE status = 'SUCCESS') as log") \
+                .option("user", jdbc_config.get("user")) \
+                .option("password", jdbc_config.get("password")) \
+                .option("driver", jdbc_config.get("driver")) \
+                .load()
             
-            jdbc_url = (
-                f"jdbc:{log_config['type']}://"
-                f"{log_config['host']}:{log_config['port']}/"
-                f"{log_config['database']}"
-            )
+            last_run = run_log_df.first()
             
-            query = """
-                (SELECT MAX(end_time) as last_run_time 
-                 FROM etl_run_log 
-                 WHERE status = 'SUCCESS') as last_run
-            """
-            
-            df = (self.spark.read
-                  .format("jdbc")
-                  .option("url", jdbc_url)
-                  .option("dbtable", query)
-                  .option("user", log_config['user'])
-                  .option("password", log_config['password'])
-                  .option("driver", log_config['driver'])
-                  .load())
-            
-            result = df.first()
-            if result and result.last_run_time:
-                return str(result.last_run_time)
+            if last_run and last_run["last_run"]:
+                return last_run["last_run"]
             
             return None
             
         except Exception as e:
-            self.logger.error(f"Error retrieving last run time: {str(e)}")
+            self.logger.error(f"Error retrieving last run timestamp: {str(e)}")
             return None
     
-    def extract_with_partitions(
-        self,
-        partition_column: str = "id",
-        num_partitions: int = 10
-    ) -> DataFrame:
+    def _apply_schema_transformations(self, df: DataFrame) -> DataFrame:
         """
-        Extract data with partitioning for parallel processing
+        Apply schema transformations and type conversions
         
         Args:
-            partition_column: Column to use for partitioning
-            num_partitions: Number of partitions to create
+            df: Input DataFrame
             
         Returns:
-            Partitioned DataFrame
+            DataFrame with correct schema
         """
-        source_config = self.config['source']['database']
+        # Cast columns to correct types
+        df = df.withColumn("value", F.col("value").cast(DecimalType(15, 2))) \
+               .withColumn("created_at", F.col("created_at").cast(TimestampType())) \
+               .withColumn("changed_at", F.col("changed_at").cast(TimestampType()))
         
-        jdbc_url = (
-            f"jdbc:{source_config['type']}://"
-            f"{source_config['host']}:{source_config['port']}/"
-            f"{source_config['database']}"
-        )
-        
-        df = (self.spark.read
-              .format("jdbc")
-              .option("url", jdbc_url)
-              .option("dbtable", source_config['table'])
-              .option("user", source_config['user'])
-              .option("password", source_config['password'])
-              .option("driver", source_config['driver'])
-              .option("partitionColumn", partition_column)
-              .option("numPartitions", num_partitions)
-              .load())
+        # Handle nulls and defaults
+        df = df.fillna({
+            "status": "UNKNOWN",
+            "category": "UNCATEGORIZED",
+            "source_system": "UNKNOWN"
+        })
         
         return df
