@@ -1,44 +1,51 @@
-# ETL Data Initialization Configuration
-
-init_data:
-  sample_rows: 100
-  categories:
-    - PREMIUM
-    - STANDARD
-    - BASIC
-    - VIP
-    - TRIAL
-  value_range:
-    min: 50
-    max: 1000
-
-spark:
-  app_name: ETL_Data_Initializer
-  master: local[*]
-  configs:
-    spark.sql.shuffle.partitions: 200
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
-    spark.default.parallelism: 8
-    spark.driver.memory: 2g
-    spark.executor.memory: 4g
-
-database:
-  format: parquet
-  source_data_path: data/source_data
-  config_data_path: data/config_data
-  schedule_data_path: data/schedule_data
-  category_metadata_path: data/category_metadata
-  checkpoint_location: /tmp/etl_checkpoints
-  write_mode: overwrite
-
+# ETL Logger Configuration
 logging:
   level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  
+  # In-memory storage settings
+  storage:
+    max_entries: 10000  # Maximum log entries to retain in memory
+    auto_clear: false   # Automatically clear logs after export
+    
+  # Log rotation (for future file-based implementation)
+  rotation:
+    enabled: false
+    max_bytes: 10485760  # 10 MB
+    backup_count: 5
 
-validation:
-  max_null_percentage: 5.0
-  min_unique_ids: 90.0
-  value_range:
-    min: 0
-    max: 10000
+# Component names for standardization
+components:
+  extractor: EXTRACTOR
+  transformer: TRANSFORMER
+  loader: LOADER
+  orchestrator: ORCHESTRATOR
+  data_quality: DATA_QUALITY
+  monitor: MONITOR
+
+# Log levels mapping
+log_levels:
+  debug: DEBUG
+  info: INFO
+  warning: WARNING
+  error: ERROR
+  critical: CRITICAL
+
+# ETL Process Configuration
+etl:
+  default_batch_size: 1000
+  max_retries: 3
+  timeout_seconds: 3600
+  
+  # Performance monitoring
+  monitoring:
+    enabled: true
+    log_performance_metrics: true
+    alert_on_error_threshold: 10
+
+# Testing Configuration
+testing:
+  mock_data_rows: 100
+  test_run_prefix: "TEST"
+  enable_debug_logs: true
