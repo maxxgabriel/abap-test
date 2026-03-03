@@ -1,0 +1,51 @@
+{
+  "etl_config": {
+    "source": {
+      "type": "DATABASE",
+      "connection": {
+        "host": "localhost",
+        "port": 3200,
+        "database": "SOURCE_DB",
+        "schema": "PUBLIC"
+      },
+      "query": "SELECT * FROM source_table WHERE status = 'ACTIVE'"
+    },
+    "transformation": {
+      "rules": [
+        {
+          "name": "uppercase_names",
+          "enabled": true,
+          "fields": ["name"]
+        },
+        {
+          "name": "calculate_derived",
+          "enabled": true,
+          "formula": "value * 1.5"
+        },
+        {
+          "name": "validate_required",
+          "enabled": true,
+          "fields": ["id", "name"]
+        }
+      ]
+    },
+    "target": {
+      "type": "DATABASE",
+      "connection": {
+        "host": "localhost",
+        "port": 3200,
+        "database": "TARGET_DB",
+        "schema": "PUBLIC"
+      },
+      "table": "target_table",
+      "batch_size": 1000,
+      "mode": "INSERT"
+    },
+    "options": {
+      "error_handling": "CONTINUE",
+      "log_level": "INFO",
+      "parallel_processing": false,
+      "max_threads": 4
+    }
+  }
+}

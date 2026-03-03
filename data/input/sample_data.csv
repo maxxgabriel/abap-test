@@ -1,0 +1,11 @@
+id,name,value,created_at
+001,Product Alpha,100,2026-01-01 10:00:00
+002,Product Beta,200,2026-01-02 11:30:00
+003,Product Gamma,300,2026-01-03 14:15:00
+004,Product Delta,400,2026-01-04 09:45:00
+005,Product Epsilon,500,2026-01-05 16:20:00
+006,Product Zeta,150,2026-01-06 12:00:00
+007,Product Eta,250,2026-01-07 13:30:00
+008,Product Theta,350,2026-01-08 15:45:00
+009,Product Iota,450,2026-01-09 10:30:00
+010,Product Kappa,550,2026-01-10 11:00:00
