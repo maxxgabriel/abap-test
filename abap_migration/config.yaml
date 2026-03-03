@@ -1,58 +1,183 @@
-# ETL Loader Configuration
+# ETL Loading Configuration
 
-# Target Configuration
-target_type: "DATABASE"  # DATABASE, PARQUET, DELTA
-target_table: "etl_target_data"
-target_path: "/data/output/target"
+# Run configuration
+run_id: "RUN_${timestamp}"
+run_user: "etl_system"
+run_type: "scheduled"  # manual, scheduled, incremental
 
-# Database Configuration
-jdbc_url: "jdbc:postgresql://localhost:5432/etl_db"
-db_user: "etl_user"
-db_password: "${DB_PASSWORD}"  # Use environment variable
-db_driver: "org.postgresql.Driver"
+# Source configuration
+source:
+  type: "database"  # database, file, staging
+  jdbc_url: "jdbc:postgresql://localhost:5432/etl_source"
+  user: "etl_user"
+  password: "etl_password"
+  table: "etl_source_data"
+  
+  # For file-based sources
+  path: "/data/source"
+  format: "parquet"  # parquet, csv, json, delta
+  
+  # Incremental settings
+  incremental_column: "changed_at"
+  last_run_time: null
 
-# Batch Processing
-batch_size: 1000
-max_retries: 3
-retry_delay_seconds: 5
+# Transform configuration
+transform:
+  # Business rules
+  apply_business_rules: true
+  rules:
+    high_value_threshold: 750
+    medium_value_threshold: 300
+    premium_multiplier: 1.5
+  
+  # Validation
+  enable_validation: true
+  required_fields:
+    - id
+    - name
+    - value
+  
+  # Enrichment
+  enable_enrichment: true
+  enrichment_sources:
+    - type: "config_table"
+      table: "etl_config"
 
-# Load Modes
-default_load_mode: "UPSERT"  # INSERT, UPDATE, UPSERT
-enable_reconciliation: true
+# Target configuration
+target:
+  type: "database"  # database, file, data_warehouse
+  
+  # Database target
+  jdbc_url: "jdbc:postgresql://localhost:5432/etl_target"
+  user: "etl_user"
+  password: "etl_password"
+  table: "etl_target_data"
+  
+  # File target
+  path: "/data/target"
+  format: "delta"  # delta, parquet, csv
+  
+  # Schema
+  schema:
+    - name: "id"
+      type: "string"
+      nullable: false
+    - name: "name"
+      type: "string"
+      nullable: false
+    - name: "value"
+      type: "decimal(15,2)"
+      nullable: true
+    - name: "transformed_value"
+      type: "decimal(15,2)"
+      nullable: true
+    - name: "status"
+      type: "string"
+      nullable: true
+    - name: "category"
+      type: "string"
+      nullable: true
+    - name: "priority"
+      type: "integer"
+      nullable: true
+    - name: "etl_run_id"
+      type: "string"
+      nullable: false
+    - name: "processed_at"
+      type: "timestamp"
+      nullable: false
+    - name: "processed_by"
+      type: "string"
+      nullable: true
+    - name: "etl_loaded_at"
+      type: "timestamp"
+      nullable: false
 
-# Performance Settings
-num_partitions: 10
-write_parallelism: 4
-buffer_size_mb: 64
+# Load configuration
+load:
+  # Mode: INSERT, UPDATE, UPSERT
+  mode: "UPSERT"
+  
+  # Batch settings
+  batch_size: 1000
+  enable_batching: true
+  num_partitions: 10
+  
+  # Key columns for UPSERT/UPDATE
+  key_columns:
+    - "id"
+  
+  # Required columns
+  required_columns:
+    - "id"
+    - "name"
+    - "etl_run_id"
+  
+  # Partitioning
+  enable_partitioning: true
+  partition_columns:
+    - "category"
+  
+  # Data quality
+  enable_reconciliation: true
+  enable_pre_validation: true
+  
+  # Error handling
+  max_retries: 3
+  continue_on_error: false
+  error_threshold_percent: 5
 
-# Error Handling
-error_table: "etl_error_log"
-continue_on_error: false
-max_error_threshold: 100
+# Performance settings
+performance:
+  spark_config:
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.driver.memory: "4g"
+    spark.executor.memory: "4g"
+    spark.executor.cores: 2
+  
+  # Caching
+  enable_caching: true
+  cache_intermediate_results: false
 
-# Logging
-log_level: "INFO"
-log_batch_progress: true
-log_retention_days: 90
+# Monitoring & Logging
+monitoring:
+  enable_metrics: true
+  enable_detailed_logging: true
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  
+  # Alerts
+  enable_alerts: true
+  alert_on_failure: true
+  alert_on_threshold: true
+  alert_email: "etl-admin@example.com"
+  
+  # Metrics
+  track_throughput: true
+  track_data_quality: true
 
-# Metadata
-add_load_timestamp: true
-add_run_id: true
-add_source_info: true
+# Data quality
+data_quality:
+  enable_quality_checks: true
+  checks:
+    - name: "completeness"
+      enabled: true
+    - name: "uniqueness"
+      enabled: true
+    - name: "validity"
+      enabled: true
+    - name: "consistency"
+      enabled: true
+  
+  # Quality thresholds
+  min_completeness_percent: 95
+  max_duplicate_percent: 1
+  max_invalid_percent: 5
 
-# Validation
-validate_before_load: true
-validate_after_load: true
-data_quality_checks:
-  - check_duplicates
-  - check_nulls
-  - check_data_types
-
-# Spark Configuration
-spark:
-  app_name: "ETL_Loader"
-  master: "local[*]"
-  config:
-    spark.sql.shuffle.partitions: "200"
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
+# Maintenance
+maintenance:
+  log_retention_days: 90
+  enable_cleanup: true
+  archive_old_runs: true
+  archive_after_days: 30
