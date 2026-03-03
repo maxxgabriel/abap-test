@@ -2,34 +2,29 @@
 ETL Logger utility class with singleton pattern, in-memory storage,
 timestamp formatting, and log level management.
 """
-from __future__ import annotations
-
-import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from dataclasses import dataclass, field
 from enum import Enum
-from threading import Lock
+from dataclasses import dataclass, field, asdict
+import threading
 
 
 class LogLevel(Enum):
     """Log level enumeration"""
-    DEBUG = "DEBUG"
     INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
-    CRITICAL = "CRITICAL"
+    DEBUG = "DEBUG"
 
 
 @dataclass
 class LogEntry:
-    """Log entry data structure"""
+    """Data class for log entries"""
     timestamp: datetime
     level: str
     component: str
     message: str
     details: Optional[str] = None
-    run_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert log entry to dictionary"""
@@ -38,18 +33,14 @@ class LogEntry:
             'level': self.level,
             'component': self.component,
             'message': self.message,
-            'details': self.details,
-            'run_id': self.run_id
+            'details': self.details
         }
     
     def format_message(self) -> str:
         """Format log entry as string"""
-        timestamp_str = self.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        base_msg = f"[{timestamp_str}] {self.level}: {self.component} - {self.message}"
+        base_msg = f"[{self.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}] {self.level}: {self.component} - {self.message}"
         if self.details:
-            base_msg += f"\n  Details: {self.details}"
-        if self.run_id:
-            base_msg += f"\n  Run ID: {self.run_id}"
+            return f"{base_msg}\n  Details: {self.details}"
         return base_msg
 
 
@@ -58,427 +49,373 @@ class ETLLogger:
     Singleton logger class for centralized ETL logging with in-memory storage.
     
     Features:
-    - Singleton pattern for centralized logging
+    - Singleton pattern for global access
+    - Thread-safe operations
     - In-memory log storage
     - Timestamp formatting
     - Log level management
-    - Thread-safe operations
-    - Console and file output support
+    - Component-based logging
     """
     
-    _instance: Optional[ETLLogger] = None
-    _lock: Lock = Lock()
+    _instance = None
+    _lock = threading.Lock()
     
-    def __new__(cls) -> ETLLogger:
-        """Singleton pattern implementation"""
+    def __new__(cls):
+        """Ensure singleton instance"""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
+                    cls._instance = super(ETLLogger, cls).__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
     
     def __init__(self):
-        """Initialize logger instance"""
+        """Initialize logger (only once due to singleton)"""
         if self._initialized:
             return
             
         self._logs: List[LogEntry] = []
-        self._log_level: LogLevel = LogLevel.INFO
-        self._console_output: bool = True
-        self._file_output: bool = False
-        self._log_file_path: Optional[str] = None
-        self._max_logs_in_memory: int = 10000
-        
-        # Configure Python logging
-        self._configure_python_logger()
-        
+        self._log_lock = threading.Lock()
+        self._min_level = LogLevel.INFO
+        self._enabled = True
+        self._max_entries = 10000  # Prevent unlimited memory growth
         self._initialized = True
     
-    def _configure_python_logger(self) -> None:
-        """Configure Python's built-in logger"""
-        self._python_logger = logging.getLogger('ETLLogger')
-        self._python_logger.setLevel(logging.DEBUG)
-        
-        # Console handler
-        if not self._python_logger.handlers:
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            console_handler.setFormatter(formatter)
-            self._python_logger.addHandler(console_handler)
-    
     @classmethod
-    def get_instance(cls) -> ETLLogger:
+    def get_instance(cls) -> 'ETLLogger':
         """
-        Get singleton instance of ETLLogger
+        Get singleton logger instance.
         
         Returns:
             ETLLogger: Singleton logger instance
         """
         return cls()
     
-    def set_log_level(self, level: LogLevel) -> None:
-        """
-        Set minimum log level
-        
-        Args:
-            level: Log level to set
-        """
-        self._log_level = level
-        self._python_logger.info(f"Log level set to: {level.value}")
-    
-    def enable_console_output(self, enabled: bool = True) -> None:
-        """
-        Enable or disable console output
-        
-        Args:
-            enabled: Whether to enable console output
-        """
-        self._console_output = enabled
-    
-    def enable_file_output(self, file_path: str) -> None:
-        """
-        Enable file output for logs
-        
-        Args:
-            file_path: Path to log file
-        """
-        self._file_output = True
-        self._log_file_path = file_path
-        
-        # Add file handler to Python logger
-        file_handler = logging.FileHandler(file_path)
-        file_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        self._python_logger.addHandler(file_handler)
-    
-    def set_max_logs_in_memory(self, max_logs: int) -> None:
-        """
-        Set maximum number of logs to keep in memory
-        
-        Args:
-            max_logs: Maximum number of logs
-        """
-        self._max_logs_in_memory = max_logs
-        self._trim_logs()
-    
-    def _add_log_entry(
-        self,
-        level: str,
-        component: str,
-        message: str,
-        details: Optional[str] = None,
-        run_id: Optional[str] = None
-    ) -> None:
-        """
-        Internal method to add log entry
-        
-        Args:
-            level: Log level
-            component: Component name
-            message: Log message
-            details: Optional details
-            run_id: Optional run ID
-        """
-        log_entry = LogEntry(
-            timestamp=datetime.now(),
-            level=level,
-            component=component,
-            message=message,
-            details=details,
-            run_id=run_id
-        )
-        
-        # Add to in-memory storage
-        with self._lock:
-            self._logs.append(log_entry)
-            self._trim_logs()
-        
-        # Console output
-        if self._console_output:
-            print(log_entry.format_message())
-        
-        # Python logger output (for file logging)
-        log_method = getattr(self._python_logger, level.lower())
-        log_msg = f"{component} - {message}"
-        if details:
-            log_msg += f" | Details: {details}"
-        if run_id:
-            log_msg += f" | Run ID: {run_id}"
-        log_method(log_msg)
-    
-    def _trim_logs(self) -> None:
-        """Trim logs to maximum size"""
-        if len(self._logs) > self._max_logs_in_memory:
-            self._logs = self._logs[-self._max_logs_in_memory:]
-    
-    def _should_log(self, level: LogLevel) -> bool:
-        """
-        Check if message should be logged based on log level
-        
-        Args:
-            level: Log level to check
-            
-        Returns:
-            bool: Whether to log the message
-        """
-        level_priority = {
-            LogLevel.DEBUG: 0,
-            LogLevel.INFO: 1,
-            LogLevel.WARNING: 2,
-            LogLevel.ERROR: 3,
-            LogLevel.CRITICAL: 4
-        }
-        return level_priority[level] >= level_priority[self._log_level]
-    
-    def log_debug(
-        self,
-        component: str,
-        message: str,
-        details: Optional[str] = None,
-        run_id: Optional[str] = None
-    ) -> None:
-        """
-        Log debug message
-        
-        Args:
-            component: Component name
-            message: Log message
-            details: Optional details
-            run_id: Optional run ID
-        """
-        if self._should_log(LogLevel.DEBUG):
-            self._add_log_entry(LogLevel.DEBUG.value, component, message, details, run_id)
-    
     def log_info(
         self,
         component: str,
         message: str,
-        details: Optional[str] = None,
-        run_id: Optional[str] = None
+        details: Optional[str] = None
     ) -> None:
         """
-        Log info message
+        Log informational message.
         
         Args:
-            component: Component name
+            component: Component name (e.g., 'EXTRACTOR', 'TRANSFORMER')
             message: Log message
-            details: Optional details
-            run_id: Optional run ID
+            details: Optional detailed information
         """
-        if self._should_log(LogLevel.INFO):
-            self._add_log_entry(LogLevel.INFO.value, component, message, details, run_id)
+        self._add_log_entry(
+            level=LogLevel.INFO,
+            component=component,
+            message=message,
+            details=details
+        )
     
     def log_warning(
         self,
         component: str,
         message: str,
-        details: Optional[str] = None,
-        run_id: Optional[str] = None
+        details: Optional[str] = None
     ) -> None:
         """
-        Log warning message
+        Log warning message.
         
         Args:
             component: Component name
-            message: Log message
-            details: Optional details
-            run_id: Optional run ID
+            message: Warning message
+            details: Optional detailed information
         """
-        if self._should_log(LogLevel.WARNING):
-            self._add_log_entry(LogLevel.WARNING.value, component, message, details, run_id)
+        self._add_log_entry(
+            level=LogLevel.WARNING,
+            component=component,
+            message=message,
+            details=details
+        )
     
     def log_error(
         self,
         component: str,
         message: str,
-        details: Optional[str] = None,
-        run_id: Optional[str] = None
+        details: Optional[str] = None
     ) -> None:
         """
-        Log error message
+        Log error message.
         
         Args:
             component: Component name
-            message: Log message
-            details: Optional details
-            run_id: Optional run ID
+            message: Error message
+            details: Optional detailed information (e.g., exception traceback)
         """
-        if self._should_log(LogLevel.ERROR):
-            self._add_log_entry(LogLevel.ERROR.value, component, message, details, run_id)
+        self._add_log_entry(
+            level=LogLevel.ERROR,
+            component=component,
+            message=message,
+            details=details
+        )
     
-    def log_critical(
+    def log_debug(
         self,
         component: str,
         message: str,
-        details: Optional[str] = None,
-        run_id: Optional[str] = None
+        details: Optional[str] = None
     ) -> None:
         """
-        Log critical message
+        Log debug message.
         
         Args:
             component: Component name
-            message: Log message
-            details: Optional details
-            run_id: Optional run ID
+            message: Debug message
+            details: Optional detailed information
         """
-        if self._should_log(LogLevel.CRITICAL):
-            self._add_log_entry(LogLevel.CRITICAL.value, component, message, details, run_id)
+        self._add_log_entry(
+            level=LogLevel.DEBUG,
+            component=component,
+            message=message,
+            details=details
+        )
+    
+    def _add_log_entry(
+        self,
+        level: LogLevel,
+        component: str,
+        message: str,
+        details: Optional[str] = None
+    ) -> None:
+        """
+        Internal method to add log entry with thread safety.
+        
+        Args:
+            level: Log level enum
+            component: Component name
+            message: Log message
+            details: Optional detailed information
+        """
+        if not self._enabled:
+            return
+        
+        if self._should_log(level):
+            log_entry = LogEntry(
+                timestamp=datetime.now(),
+                level=level.value,
+                component=component,
+                message=message,
+                details=details
+            )
+            
+            with self._log_lock:
+                self._logs.append(log_entry)
+                
+                # Prevent unlimited memory growth
+                if len(self._logs) > self._max_entries:
+                    self._logs = self._logs[-self._max_entries:]
+            
+            # Output to console
+            print(log_entry.format_message())
+    
+    def _should_log(self, level: LogLevel) -> bool:
+        """
+        Check if message should be logged based on minimum level.
+        
+        Args:
+            level: Log level to check
+            
+        Returns:
+            bool: True if should log, False otherwise
+        """
+        level_priority = {
+            LogLevel.DEBUG: 0,
+            LogLevel.INFO: 1,
+            LogLevel.WARNING: 2,
+            LogLevel.ERROR: 3
+        }
+        return level_priority.get(level, 0) >= level_priority.get(self._min_level, 0)
     
     def get_logs(
         self,
-        level: Optional[str] = None,
+        level: Optional[LogLevel] = None,
         component: Optional[str] = None,
-        run_id: Optional[str] = None,
         limit: Optional[int] = None
     ) -> List[LogEntry]:
         """
-        Get logs with optional filtering
+        Retrieve log entries with optional filtering.
         
         Args:
             level: Filter by log level
-            component: Filter by component
-            run_id: Filter by run ID
-            limit: Maximum number of logs to return
+            component: Filter by component name
+            limit: Maximum number of entries to return
             
         Returns:
-            List of log entries
+            List[LogEntry]: List of log entries
         """
-        with self._lock:
-            filtered_logs = self._logs.copy()
+        with self._log_lock:
+            logs = self._logs.copy()
         
         # Apply filters
         if level:
-            filtered_logs = [log for log in filtered_logs if log.level == level]
+            logs = [log for log in logs if log.level == level.value]
+        
         if component:
-            filtered_logs = [log for log in filtered_logs if log.component == component]
-        if run_id:
-            filtered_logs = [log for log in filtered_logs if log.run_id == run_id]
+            logs = [log for log in logs if log.component == component]
         
         # Apply limit
         if limit:
-            filtered_logs = filtered_logs[-limit:]
+            logs = logs[-limit:]
         
-        return filtered_logs
+        return logs
     
-    def get_logs_as_dict(
+    def get_logs_as_dicts(
         self,
-        level: Optional[str] = None,
+        level: Optional[LogLevel] = None,
         component: Optional[str] = None,
-        run_id: Optional[str] = None,
         limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
-        Get logs as dictionaries
+        Retrieve log entries as dictionaries.
         
         Args:
             level: Filter by log level
-            component: Filter by component
-            run_id: Filter by run ID
-            limit: Maximum number of logs to return
+            component: Filter by component name
+            limit: Maximum number of entries to return
             
         Returns:
-            List of log dictionaries
+            List[Dict]: List of log entries as dictionaries
         """
-        logs = self.get_logs(level, component, run_id, limit)
+        logs = self.get_logs(level=level, component=component, limit=limit)
         return [log.to_dict() for log in logs]
     
     def clear_logs(self) -> None:
-        """Clear all logs from memory"""
-        with self._lock:
+        """Clear all log entries from memory"""
+        with self._log_lock:
             self._logs.clear()
-        self._python_logger.info("Logs cleared from memory")
+    
+    def set_min_level(self, level: LogLevel) -> None:
+        """
+        Set minimum log level.
+        
+        Args:
+            level: Minimum log level to capture
+        """
+        self._min_level = level
+    
+    def set_max_entries(self, max_entries: int) -> None:
+        """
+        Set maximum number of log entries to keep in memory.
+        
+        Args:
+            max_entries: Maximum number of entries
+        """
+        if max_entries < 1:
+            raise ValueError("max_entries must be at least 1")
+        self._max_entries = max_entries
+    
+    def enable(self) -> None:
+        """Enable logging"""
+        self._enabled = True
+    
+    def disable(self) -> None:
+        """Disable logging"""
+        self._enabled = False
+    
+    def is_enabled(self) -> bool:
+        """
+        Check if logging is enabled.
+        
+        Returns:
+            bool: True if enabled, False otherwise
+        """
+        return self._enabled
     
     def get_log_count(self) -> int:
         """
-        Get total number of logs in memory
+        Get total number of log entries.
         
         Returns:
-            Number of logs
+            int: Number of log entries
         """
-        with self._lock:
+        with self._log_lock:
             return len(self._logs)
     
-    def get_log_summary(self) -> Dict[str, int]:
+    def get_log_count_by_level(self) -> Dict[str, int]:
         """
-        Get summary of logs by level
+        Get count of log entries by level.
         
         Returns:
-            Dictionary with counts per level
+            Dict[str, int]: Dictionary mapping log level to count
         """
-        summary = {
-            'DEBUG': 0,
-            'INFO': 0,
-            'WARNING': 0,
-            'ERROR': 0,
-            'CRITICAL': 0
-        }
-        
-        with self._lock:
+        with self._log_lock:
+            counts = {}
             for log in self._logs:
-                if log.level in summary:
-                    summary[log.level] += 1
-        
-        return summary
+                counts[log.level] = counts.get(log.level, 0) + 1
+            return counts
     
-    def export_logs_to_file(self, file_path: str, format: str = 'text') -> None:
+    def get_recent_errors(self, limit: int = 10) -> List[LogEntry]:
         """
-        Export logs to file
+        Get most recent error log entries.
         
         Args:
-            file_path: Path to export file
-            format: Export format ('text' or 'json')
+            limit: Maximum number of errors to return
+            
+        Returns:
+            List[LogEntry]: List of recent error entries
         """
-        with self._lock:
+        return self.get_logs(level=LogLevel.ERROR, limit=limit)
+    
+    def export_logs_to_file(self, filepath: str) -> None:
+        """
+        Export all logs to a file.
+        
+        Args:
+            filepath: Path to output file
+        """
+        with self._log_lock:
             logs = self._logs.copy()
         
-        if format == 'json':
-            import json
-            with open(file_path, 'w') as f:
-                json.dump([log.to_dict() for log in logs], f, indent=2)
-        else:
-            with open(file_path, 'w') as f:
-                for log in logs:
-                    f.write(log.format_message() + '\n')
+        with open(filepath, 'w') as f:
+            for log in logs:
+                f.write(log.format_message() + '\n')
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        Get summary statistics of logs.
         
-        self._python_logger.info(f"Logs exported to {file_path}")
+        Returns:
+            Dict: Summary statistics
+        """
+        with self._log_lock:
+            logs = self._logs.copy()
+        
+        if not logs:
+            return {
+                'total_count': 0,
+                'by_level': {},
+                'by_component': {},
+                'first_entry': None,
+                'last_entry': None
+            }
+        
+        by_level = {}
+        by_component = {}
+        
+        for log in logs:
+            by_level[log.level] = by_level.get(log.level, 0) + 1
+            by_component[log.component] = by_component.get(log.component, 0) + 1
+        
+        return {
+            'total_count': len(logs),
+            'by_level': by_level,
+            'by_component': by_component,
+            'first_entry': logs[0].timestamp.isoformat(),
+            'last_entry': logs[-1].timestamp.isoformat()
+        }
 
 
-# Convenience functions for direct access
+# Module-level convenience function
 def get_logger() -> ETLLogger:
-    """Get logger instance"""
+    """
+    Convenience function to get logger instance.
+    
+    Returns:
+        ETLLogger: Singleton logger instance
+    """
     return ETLLogger.get_instance()
-
-
-def log_info(component: str, message: str, details: Optional[str] = None, run_id: Optional[str] = None) -> None:
-    """Log info message"""
-    ETLLogger.get_instance().log_info(component, message, details, run_id)
-
-
-def log_error(component: str, message: str, details: Optional[str] = None, run_id: Optional[str] = None) -> None:
-    """Log error message"""
-    ETLLogger.get_instance().log_error(component, message, details, run_id)
-
-
-def log_warning(component: str, message: str, details: Optional[str] = None, run_id: Optional[str] = None) -> None:
-    """Log warning message"""
-    ETLLogger.get_instance().log_warning(component, message, details, run_id)
-
-
-def log_debug(component: str, message: str, details: Optional[str] = None, run_id: Optional[str] = None) -> None:
-    """Log debug message"""
-    ETLLogger.get_instance().log_debug(component, message, details, run_id)
-
-
-def log_critical(component: str, message: str, details: Optional[str] = None, run_id: Optional[str] = None) -> None:
-    """Log critical message"""
-    ETLLogger.get_instance().log_critical(component, message, details, run_id)
