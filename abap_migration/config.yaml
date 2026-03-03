@@ -1,71 +1,113 @@
-# ETL Configuration File
+# Data Quality Validation Configuration
 
-# Source Configuration
-source:
-  type: database
-  connection:
-    host: localhost
-    port: 5432
-    database: etl_source
-  table: source_data
-  max_records: 1000
+# Application settings
+app_name: "ETL Data Quality Validation"
+log_level: "INFO"
 
-# Target Configuration
-target:
-  type: database
-  connection:
-    host: localhost
-    port: 5432
-    database: etl_target
-  table: target_data
-  mode: upsert
+# Spark configuration
+spark:
+  app_name: "data_quality_validator"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.default.parallelism: "200"
 
-# Processing Configuration
-processing:
-  batch_size: 1000
-  max_retries: 3
-  enable_validation: true
-  enable_reconciliation: true
+# Data source configuration
+data_source:
+  format: "parquet"
+  path: "/data/transformed/"
+  primary_key: "id"
   
-# Transformation Rules
-transformation:
-  premium_multiplier: 1.5
-  standard_multiplier: 1.2
-  categories:
-    - PREMIUM
-    - STANDARD
-    - BASIC
-    - VIP
-    - TRIAL
+# Required fields for completeness check
+required_fields:
+  - "id"
+  - "name"
+  - "value"
+  - "category"
+  - "status"
 
-# Quality Checks
-data_quality:
-  enable_completeness_check: true
-  enable_uniqueness_check: true
-  enable_validity_check: true
-  enable_consistency_check: true
-  max_error_threshold: 5.0
+# Valid values for categorical fields
+valid_statuses:
+  - "ACTIVE"
+  - "INACTIVE"
+  - "TRANSFORMED"
+  - "HIGH_VALUE"
+  - "MEDIUM_VALUE"
+  - "LOW_VALUE"
+  - "INVALID"
 
-# Logging Configuration
+valid_categories:
+  - "PREMIUM"
+  - "STANDARD"
+  - "BASIC"
+  - "VIP"
+  - "TRIAL"
+  - "UNCATEGORIZED"
+
+# Quality thresholds (percentages)
+quality_thresholds:
+  # Completeness thresholds
+  max_null_percentage: 5.0  # Maximum percentage of null values allowed
+  min_field_completeness: 95.0  # Minimum completeness per field
+  
+  # Uniqueness thresholds
+  max_duplicate_percentage: 0.0  # Maximum percentage of duplicate records
+  
+  # Validity thresholds
+  max_invalid_percentage: 1.0  # Maximum percentage of invalid values
+  
+  # Consistency thresholds
+  max_inconsistent_percentage: 5.0  # Maximum percentage of inconsistent records
+  min_transformation_ratio: 0.8  # Minimum ratio for transformed vs original values
+  
+  # Record count thresholds
+  min_record_count: 10  # Minimum expected record count
+  max_record_count: 1000000  # Maximum expected record count
+  
+  # Value range thresholds
+  max_out_of_range_percentage: 1.0  # Maximum percentage of out-of-range values
+
+# Value range constraints
+value_constraints:
+  value_min: 0
+  value_max: 10000
+  priority_min: 1
+  priority_max: 5
+
+# Anomaly detection settings
+anomaly_detection:
+  enable_volume_anomaly_detection: false
+  enable_outlier_detection: true
+  outlier_method: "iqr"  # Options: iqr, zscore
+  outlier_threshold: 1.5  # For IQR method
+  
+# Report settings
+reporting:
+  generate_html_report: true
+  generate_json_report: true
+  save_to_database: true
+  email_on_failure: false
+  email_recipients:
+    - "data-quality-team@example.com"
+  
+# Output paths
+output:
+  report_path: "/data/quality_reports/"
+  metrics_path: "/data/quality_metrics/"
+  
+# Database connection for storing quality metrics
+database:
+  host: "localhost"
+  port: 5432
+  database: "etl_metadata"
+  schema: "data_quality"
+  table: "validation_results"
+  
+# Logging configuration
 logging:
-  level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  log_dir: logs
-  retention_days: 90
-
-# Monitoring Configuration
-monitoring:
-  enable_alerts: true
-  alert_email: admin@example.com
-  alert_threshold:
-    error_rate: 20.0
-    max_running_jobs: 5
-  dashboard_refresh_seconds: 300
-
-# Performance Configuration
-performance:
-  spark_master: local[*]
-  executor_memory: 4g
-  driver_memory: 2g
-  executor_cores: 4
-  shuffle_partitions: 200
+  log_dir: "/logs/quality_validation"
+  log_file: "data_quality_{run_id}.log"
+  console_output: true
+  file_output: true
