@@ -1,295 +1,232 @@
 """
-Load module for Delta Lake with merge/upsert operations.
-Replaces ABAP batch loading with Delta Lake merge operations.
+Data loading module for PySpark ETL framework.
+Handles data persistence to target systems with reconciliation support.
 """
-from pyspark.sql import SparkSession, DataFrame
-from delta.tables import DeltaTable
-from pyspark.sql.functions import col, current_timestamp, lit
+
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import col
 from typing import Dict, Any, Optional
 import logging
 
-logger = logging.getLogger(__name__)
 
-
-class DeltaLakeLoader:
-    """Load data to Delta Lake with support for multiple write modes."""
+class DataLoader:
+    """Loads transformed data to target systems with error handling."""
     
-    def __init__(self, spark: SparkSession, run_id: str, config: Dict[str, Any]):
+    def __init__(self, spark: SparkSession, config: Dict[str, Any], run_id: str):
         """
-        Initialize Delta Lake loader.
+        Initialize the data loader.
         
         Args:
-            spark: SparkSession instance
-            run_id: Unique run identifier
+            spark: Active SparkSession
             config: Configuration dictionary
+            run_id: Unique identifier for this ETL run
         """
         self.spark = spark
-        self.run_id = run_id
         self.config = config
-        self.target_path = config['delta_lake']['target_path']
-        self.batch_size = config.get('batch_size', 1000)
+        self.run_id = run_id
+        self.logger = logging.getLogger(__name__)
         
     def load_data(
         self,
         df: DataFrame,
-        mode: str = 'upsert',
-        partition_cols: Optional[list] = None
+        mode: str = "append",
+        enable_reconciliation: bool = True
     ) -> Dict[str, Any]:
         """
-        Load data to Delta Lake with specified mode.
+        Load data to target system.
         
         Args:
             df: DataFrame to load
-            mode: Write mode - 'insert', 'upsert', 'overwrite', 'append'
-            partition_cols: Columns to partition by
+            mode: Load mode (append, overwrite, upsert)
+            enable_reconciliation: Whether to perform reconciliation
             
         Returns:
             Dictionary with load results
         """
-        logger.info(f"Starting load - Mode: {mode}, Batch size: {self.batch_size}")
+        self.logger.info(f"Starting data load - Mode: {mode}, Run ID: {self.run_id}")
         
-        result = {
-            'success_count': 0,
-            'error_count': 0,
-            'total_count': df.count(),
-            'errors': []
-        }
+        total_count = df.count()
+        success_count = 0
+        error_count = 0
+        errors = []
         
         try:
-            if mode == 'insert':
-                success = self._insert_new(df, partition_cols)
-            elif mode == 'upsert' or mode == 'merge':
-                success = self._upsert_data(df, partition_cols)
-            elif mode == 'overwrite':
-                success = self._overwrite_data(df, partition_cols)
-            elif mode == 'append':
-                success = self._append_data(df, partition_cols)
+            target_type = self.config["target"]["type"]
+            
+            if target_type == "jdbc":
+                success = self._load_to_database(df, mode)
+            elif target_type == "file":
+                success = self._load_to_file(df, mode)
+            elif target_type == "delta":
+                success = self._load_to_delta(df, mode)
             else:
-                raise ValueError(f"Unsupported mode: {mode}")
+                raise ValueError(f"Unsupported target type: {target_type}")
             
             if success:
-                result['success_count'] = result['total_count']
-                logger.info(f"Load complete - Success: {result['success_count']}")
+                success_count = total_count
+                self.logger.info(f"Successfully loaded {success_count} records")
+                
+                # Perform reconciliation if enabled
+                if enable_reconciliation:
+                    reconciled = self._reconcile_data(df)
+                    if not reconciled:
+                        self.logger.warning("Data reconciliation failed")
             else:
-                result['error_count'] = result['total_count']
-                result['errors'].append("Load operation failed")
+                error_count = total_count
+                errors.append("Load operation failed")
                 
         except Exception as e:
-            logger.error(f"Load error: {str(e)}")
-            result['error_count'] = result['total_count']
-            result['errors'].append(str(e))
+            error_count = total_count
+            errors.append(str(e))
+            self.logger.error(f"Load failed: {str(e)}")
         
-        # Perform reconciliation if enabled
-        if self.config.get('enable_reconciliation', True) and result['error_count'] == 0:
-            reconcile_success = self._reconcile_data(df)
-            if not reconcile_success:
-                logger.warning("Data reconciliation detected discrepancies")
-        
-        return result
+        return {
+            "success_count": success_count,
+            "error_count": error_count,
+            "total_count": total_count,
+            "errors": errors
+        }
     
-    def _insert_new(self, df: DataFrame, partition_cols: Optional[list]) -> bool:
-        """
-        Insert new records only (append mode with deduplication).
-        
-        Args:
-            df: DataFrame to insert
-            partition_cols: Partition columns
-            
-        Returns:
-            Success flag
-        """
+    def _load_to_database(self, df: DataFrame, mode: str) -> bool:
+        """Load data to JDBC database."""
         try:
-            writer = df.write.format("delta").mode("append")
+            jdbc_config = self.config["target"]["jdbc"]
             
-            if partition_cols:
-                writer = writer.partitionBy(*partition_cols)
+            write_mode = self._convert_mode(mode)
             
-            writer.save(self.target_path)
+            df.write \
+                .format("jdbc") \
+                .option("url", jdbc_config["url"]) \
+                .option("dbtable", jdbc_config["table"]) \
+                .option("user", jdbc_config.get("user", "")) \
+                .option("password", jdbc_config.get("password", "")) \
+                .option("driver", jdbc_config.get("driver", "")) \
+                .option("batchsize", self.config.get("load", {}).get("batch_size", 1000)) \
+                .mode(write_mode) \
+                .save()
             
-            logger.info(f"Inserted {df.count()} new records")
             return True
             
         except Exception as e:
-            logger.error(f"Insert failed: {str(e)}")
+            self.logger.error(f"Database load failed: {str(e)}")
             return False
     
-    def _upsert_data(self, df: DataFrame, partition_cols: Optional[list]) -> bool:
-        """
-        Upsert data using Delta Lake MERGE operation.
-        
-        Args:
-            df: DataFrame to upsert
-            partition_cols: Partition columns
-            
-        Returns:
-            Success flag
-        """
+    def _load_to_file(self, df: DataFrame, mode: str) -> bool:
+        """Load data to file system."""
         try:
-            # Check if table exists
-            if DeltaTable.isDeltaTable(self.spark, self.target_path):
-                delta_table = DeltaTable.forPath(self.spark, self.target_path)
+            file_config = self.config["target"]["file"]
+            output_path = file_config["path"]
+            file_format = file_config.get("format", "parquet")
+            
+            write_mode = self._convert_mode(mode)
+            
+            writer = df.write.format(file_format).mode(write_mode)
+            
+            # Add partitioning if configured
+            partition_cols = file_config.get("partition_by", [])
+            if partition_cols:
+                writer = writer.partitionBy(*partition_cols)
+            
+            writer.save(output_path)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"File load failed: {str(e)}")
+            return False
+    
+    def _load_to_delta(self, df: DataFrame, mode: str) -> bool:
+        """Load data to Delta Lake."""
+        try:
+            delta_config = self.config["target"]["delta"]
+            delta_path = delta_config["path"]
+            
+            if mode == "upsert":
+                # Perform merge operation for upsert
+                from delta.tables import DeltaTable
                 
-                # Prepare merge keys
-                merge_keys = self.config['delta_lake'].get('merge_keys', ['id'])
-                merge_condition = ' AND '.join([
-                    f"target.{key} = source.{key}" for key in merge_keys
-                ])
+                merge_keys = delta_config.get("merge_keys", ["id"])
                 
-                # Perform MERGE operation
-                (delta_table.alias("target")
-                 .merge(df.alias("source"), merge_condition)
-                 .whenMatchedUpdateAll()
-                 .whenNotMatchedInsertAll()
-                 .execute())
-                
-                logger.info(f"Upserted {df.count()} records")
+                if DeltaTable.isDeltaTable(self.spark, delta_path):
+                    delta_table = DeltaTable.forPath(self.spark, delta_path)
+                    
+                    # Build merge condition
+                    merge_condition = " AND ".join([
+                        f"target.{key} = source.{key}" for key in merge_keys
+                    ])
+                    
+                    # Perform merge
+                    delta_table.alias("target").merge(
+                        df.alias("source"),
+                        merge_condition
+                    ).whenMatchedUpdateAll() \
+                     .whenNotMatchedInsertAll() \
+                     .execute()
+                else:
+                    # First load - create Delta table
+                    df.write.format("delta").mode("overwrite").save(delta_path)
             else:
-                # Table doesn't exist, create it
-                writer = df.write.format("delta").mode("overwrite")
+                write_mode = self._convert_mode(mode)
+                df.write.format("delta").mode(write_mode).save(delta_path)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Delta load failed: {str(e)}")
+            return False
+    
+    def _convert_mode(self, mode: str) -> str:
+        """Convert load mode to Spark write mode."""
+        mode_mapping = {
+            "insert": "append",
+            "update": "overwrite",
+            "upsert": "append",
+            "append": "append",
+            "overwrite": "overwrite"
+        }
+        return mode_mapping.get(mode.lower(), "append")
+    
+    def _reconcile_data(self, df: DataFrame) -> bool:
+        """
+        Reconcile loaded data to ensure data integrity.
+        
+        Args:
+            df: DataFrame that was loaded
+            
+        Returns:
+            True if reconciliation passed
+        """
+        try:
+            expected_count = df.count()
+            
+            target_type = self.config["target"]["type"]
+            
+            if target_type == "jdbc":
+                jdbc_config = self.config["target"]["jdbc"]
                 
-                if partition_cols:
-                    writer = writer.partitionBy(*partition_cols)
+                # Count records in target table
+                actual_df = self.spark.read \
+                    .format("jdbc") \
+                    .option("url", jdbc_config["url"]) \
+                    .option("dbtable", f"(SELECT COUNT(*) as cnt FROM {jdbc_config['table']} WHERE etl_run_id = '{self.run_id}') as reconcile") \
+                    .option("user", jdbc_config.get("user", "")) \
+                    .option("password", jdbc_config.get("password", "")) \
+                    .option("driver", jdbc_config.get("driver", "")) \
+                    .load()
                 
-                writer.save(self.target_path)
-                logger.info(f"Created table and inserted {df.count()} records")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Upsert failed: {str(e)}")
-            return False
-    
-    def _overwrite_data(self, df: DataFrame, partition_cols: Optional[list]) -> bool:
-        """
-        Overwrite target table completely.
-        
-        Args:
-            df: DataFrame to write
-            partition_cols: Partition columns
-            
-        Returns:
-            Success flag
-        """
-        try:
-            writer = df.write.format("delta").mode("overwrite")
-            
-            if partition_cols:
-                writer = writer.partitionBy(*partition_cols)
-            
-            writer.save(self.target_path)
-            
-            logger.info(f"Overwrote table with {df.count()} records")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Overwrite failed: {str(e)}")
-            return False
-    
-    def _append_data(self, df: DataFrame, partition_cols: Optional[list]) -> bool:
-        """
-        Append data to existing table.
-        
-        Args:
-            df: DataFrame to append
-            partition_cols: Partition columns
-            
-        Returns:
-            Success flag
-        """
-        try:
-            writer = df.write.format("delta").mode("append")
-            
-            if partition_cols:
-                writer = writer.partitionBy(*partition_cols)
-            
-            writer.save(self.target_path)
-            
-            logger.info(f"Appended {df.count()} records")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Append failed: {str(e)}")
-            return False
-    
-    def _reconcile_data(self, loaded_df: DataFrame) -> bool:
-        """
-        Reconcile loaded data against target table.
-        
-        Args:
-            loaded_df: DataFrame that was loaded
-            
-        Returns:
-            True if reconciliation matches
-        """
-        try:
-            if not DeltaTable.isDeltaTable(self.spark, self.target_path):
-                logger.warning("Target table doesn't exist for reconciliation")
-                return False
-            
-            # Read target table
-            target_df = self.spark.read.format("delta").load(self.target_path)
-            
-            # Filter to current run
-            target_run_df = target_df.filter(col("etl_run_id") == self.run_id)
-            
-            loaded_count = loaded_df.count()
-            target_count = target_run_df.count()
-            
-            if loaded_count == target_count:
-                logger.info(f"Reconciliation successful: {loaded_count} records match")
+                actual_count = actual_df.first()["cnt"]
+                
+                if expected_count == actual_count:
+                    self.logger.info(f"Reconciliation passed: {expected_count} records")
+                    return True
+                else:
+                    self.logger.error(f"Reconciliation failed: Expected {expected_count}, Found {actual_count}")
+                    return False
+            else:
+                # For file-based targets, reconciliation is not performed
+                self.logger.info("Reconciliation skipped for file-based target")
                 return True
-            else:
-                logger.warning(
-                    f"Reconciliation mismatch: "
-                    f"Loaded {loaded_count}, Found {target_count}"
-                )
-                return False
                 
         except Exception as e:
-            logger.error(f"Reconciliation failed: {str(e)}")
+            self.logger.error(f"Reconciliation error: {str(e)}")
             return False
-    
-    def optimize_table(self, z_order_cols: Optional[list] = None):
-        """
-        Optimize Delta Lake table with OPTIMIZE and Z-ORDER.
-        
-        Args:
-            z_order_cols: Columns for Z-ORDER BY optimization
-        """
-        try:
-            if not DeltaTable.isDeltaTable(self.spark, self.target_path):
-                logger.warning("Cannot optimize non-existent table")
-                return
-            
-            delta_table = DeltaTable.forPath(self.spark, self.target_path)
-            
-            # Run OPTIMIZE
-            if z_order_cols:
-                delta_table.optimize().executeZOrderBy(*z_order_cols)
-                logger.info(f"Optimized table with Z-ORDER BY {z_order_cols}")
-            else:
-                delta_table.optimize().executeCompaction()
-                logger.info("Optimized table with compaction")
-                
-        except Exception as e:
-            logger.error(f"Table optimization failed: {str(e)}")
-    
-    def vacuum_table(self, retention_hours: int = 168):
-        """
-        Vacuum old versions from Delta Lake table.
-        
-        Args:
-            retention_hours: Hours of history to retain (default: 7 days)
-        """
-        try:
-            if not DeltaTable.isDeltaTable(self.spark, self.target_path):
-                logger.warning("Cannot vacuum non-existent table")
-                return
-            
-            delta_table = DeltaTable.forPath(self.spark, self.target_path)
-            delta_table.vacuum(retention_hours)
-            
-            logger.info(f"Vacuumed table (retention: {retention_hours} hours)")
-            
-        except Exception as e:
-            logger.error(f"Table vacuum failed: {str(e)}")
