@@ -1,120 +1,88 @@
-# Data Quality Configuration
+# ETL Data Quality Configuration
 
-quality:
-  # Quality check thresholds
-  thresholds:
-    completeness_min: 0.95  # 95% completeness required
-    uniqueness_min: 0.99    # 99% unique IDs required
-    validity_min: 0.98      # 98% valid values required
-    consistency_min: 0.97   # 97% consistent data required
-    acceptable_loss_rate: 0.05  # 5% record loss acceptable
-  
-  # Profiling settings
-  profiling:
-    enabled: true
-    sample_size: 10000  # For large datasets, sample for profiling
-    calculate_std_dev: true
-    detect_outliers: true
-    outlier_std_threshold: 3  # Number of std deviations for outlier detection
-  
-  # Anomaly detection settings
-  anomaly_detection:
-    enabled: true
-    check_patterns:
-      - duplicate_names
-      - suspicious_ids
-      - outlier_values
-      - category_distribution
-    
-    category_dominance_threshold: 0.80  # Flag if one category > 80%
-    
-  # Validation rules
-  validation_rules:
-    required_fields:
-      - id
-      - name
-      - value
-      - category
-      - status
-    
-    value_ranges:
-      value:
-        min: 0
-        max: 999999
-      priority:
-        min: 1
-        max: 5
-      transformed_value:
-        min: 0
-        max: 999999
-    
-    valid_statuses:
-      - ACTIVE
-      - INACTIVE
-      - PENDING
-      - TRANSFORMED
-      - HIGH_VALUE
-      - MEDIUM_VALUE
-      - LOW_VALUE
-      - NORMAL
-      - INVALID
-    
-    valid_categories:
+# Spark Configuration
+spark:
+  app_name: "ETL_Data_Quality_Pipeline"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+
+# Data Quality Thresholds
+quality_thresholds:
+  min_records: 1
+  max_records: 1000000
+  max_null_percentage: 10.0
+  max_pipeline_loss_pct: 5.0
+  max_duplicate_percentage: 1.0
+
+# Required Fields for Completeness Check
+required_fields:
+  - id
+  - name
+  - value
+  - category
+  - status
+
+# ID Field Configuration
+id_field: "id"
+
+# Profiling Configuration
+profiling:
+  enabled: true
+  include_column_stats: true
+  detect_anomalies: true
+  outlier_std_threshold: 3.0
+
+# Validation Rules
+validation_rules:
+  value:
+    min: 0
+    max: 1000000
+  transformed_value:
+    min: 0
+    max: 1500000
+  priority:
+    min: 1
+    max: 5
+  category:
+    allowed_values:
       - PREMIUM
       - STANDARD
       - BASIC
       - VIP
       - TRIAL
-      - TEST
       - UNCATEGORIZED
-  
-  # Record count validation
-  count_validation:
-    enabled: true
-    compare_stages:
-      - extract_to_transform
-      - transform_to_load
-    max_loss_rate: 0.05  # 5%
-    alert_on_mismatch: true
 
-# Reporting settings
-reporting:
-  generate_report: true
-  report_format: json
-  include_profile: true
-  include_anomalies: true
-  include_samples: false
-  sample_size: 10
-  
-  export:
-    enabled: true
-    path: "quality_reports/"
-    file_pattern: "quality_report_{run_id}_{timestamp}.json"
+# Consistency Rules
+consistency_rules:
+  premium_multiplier: 1.2
+  high_value_threshold: 750
+  very_high_value_threshold: 1000
 
-# Logging
+# Anomaly Detection
+anomaly_detection:
+  enabled: true
+  outlier_detection: true
+  category_distribution_check: true
+  null_pattern_check: true
+  min_category_percentage: 1.0
+  max_category_percentage: 80.0
+
+# Pipeline Count Validation
+pipeline_validation:
+  enabled: true
+  track_counts: true
+  validate_stage_transitions: true
+
+# Logging Configuration
 logging:
-  level: INFO
+  level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   
-  handlers:
-    console:
-      enabled: true
-      level: INFO
-    
-    file:
-      enabled: true
-      level: DEBUG
-      path: "logs/"
-      file_pattern: "quality_{run_id}.log"
-
-# Spark configuration
-spark:
-  app_name: "ETL Data Quality"
-  master: "local[*]"
-  
-  config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
-    spark.executor.memory: "2g"
-    spark.driver.memory: "1g"
+# Test Configuration
+test:
+  sample_data_size: 100
+  test_run_prefix: "TEST_"
+  mock_data: true
