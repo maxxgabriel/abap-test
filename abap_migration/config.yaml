@@ -1,79 +1,76 @@
-# ETL Logger Configuration
+# ETL Monitoring Configuration
 
-# Logging Configuration
-logging:
-  # Default log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-  default_level: INFO
-  
-  # Console logging
-  console:
-    enabled: true
-    level: INFO
-    format: "%(asctime)s - %(levelname)s - %(component)s - %(message)s"
-    date_format: "%Y-%m-%d %H:%M:%S"
-  
-  # File logging (optional)
-  file:
-    enabled: false
-    path: "/var/log/etl/etl.log"
-    level: DEBUG
-    max_bytes: 10485760  # 10MB
-    backup_count: 5
-    format: "%(asctime)s - %(levelname)s - %(component)s - %(message)s - %(pathname)s:%(lineno)d"
-  
-  # In-memory storage
-  memory:
-    max_entries: 10000  # Maximum log entries to keep in memory
-    auto_cleanup: true  # Automatically remove old entries when limit reached
-
-# Component Names (for consistent naming)
-components:
-  extractor: EXTRACTOR
-  transformer: TRANSFORMER
-  loader: LOADER
-  orchestrator: ORCHESTRATOR
-  data_quality: DATA_QUALITY
-  monitor: MONITOR
-  logger: LOGGER
-
-# Log Retention
-retention:
-  days: 90  # Number of days to retain logs
-  cleanup_schedule: "0 2 * * *"  # Cron expression for cleanup (2 AM daily)
-
-# Alert Configuration
-alerts:
-  enabled: true
-  error_threshold: 10  # Number of errors before triggering alert
-  warning_threshold: 50  # Number of warnings before triggering alert
-  email:
-    enabled: false
-    recipients:
-      - admin@example.com
-    smtp_server: smtp.example.com
-    smtp_port: 587
-
-# Performance Monitoring
 monitoring:
-  enabled: true
-  log_performance_metrics: true
-  track_memory_usage: true
-  
-# Export Configuration
-export:
-  # Export logs to external storage
-  enabled: false
+  # Dashboard settings
+  dashboard:
+    default_days_back: 7
+    refresh_interval_seconds: 300
+    
+  # Performance metrics
+  performance:
+    metrics_retention_days: 30
+    throughput_threshold: 100.0  # records per second
+    duration_threshold_seconds: 3600
+    
+  # Health checks
+  health:
+    max_running_jobs: 5
+    error_rate_warning_threshold: 20.0
+    error_rate_critical_threshold: 50.0
+    check_interval_seconds: 60
+    
+  # Alerting
+  alerts:
+    enabled: true
+    severity_levels:
+      - LOW
+      - MEDIUM
+      - HIGH
+      - CRITICAL
+    notification_channels:
+      email: "admin@example.com"
+      slack_webhook: ""
+      
+  # Trend analysis
+  trends:
+    moving_average_window: 7
+    analysis_days: 30
+    
+# Data sources
+data_sources:
+  run_log:
+    format: parquet
+    path: data/run_log
+    partition_by: date
+    
+  error_log:
+    format: parquet
+    path: data/error_log
+    partition_by: date
+    
+# Spark configuration
+spark:
+  app_name: "ETL_Monitoring"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    
+# Logging
+logging:
+  level: INFO
+  format: "[%(asctime)s] %(levelname)s: %(name)s - %(message)s"
+  file: logs/etl_monitor.log
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+# Report generation
+reports:
+  output_directory: reports
   formats:
     - json
-    - csv
-    - parquet
-  destination:
-    type: s3  # s3, hdfs, local
-    path: s3://etl-logs/
-    partition_by: date
-
-# Debug Mode
-debug:
-  enabled: false
-  verbose_logging: false
-  log_stack_traces: true
+    - html
+  schedule:
+    daily: "02:00"
+    weekly: "Sunday 03:00"
