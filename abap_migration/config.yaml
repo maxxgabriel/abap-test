@@ -1,96 +1,88 @@
-# Shared Framework Configuration
-app:
-  name: "ETL Shared Framework"
-  version: "1.0.0"
-  environment: "production"
+# PySpark ETL Pipeline Configuration
 
-logging:
-  level: "INFO"
-  format: "json"
-  console_output: true
-  file_output: true
-  log_dir: "/var/log/etl"
-  max_file_size_mb: 100
-  backup_count: 10
-  components:
-    - "EXTRACTOR"
-    - "TRANSFORMER"
-    - "LOADER"
-    - "ORCHESTRATOR"
-    - "DATA_QUALITY"
-    - "MONITOR"
-
-database:
-  source:
-    type: "postgresql"
-    host: "${SOURCE_DB_HOST}"
-    port: 5432
-    database: "${SOURCE_DB_NAME}"
-    user: "${SOURCE_DB_USER}"
-    password: "${SOURCE_DB_PASSWORD}"
-    schema: "etl_source"
-    connection_pool:
-      max_connections: 20
-      min_connections: 5
-      connection_timeout: 30
-      idle_timeout: 600
-  
-  target:
-    type: "postgresql"
-    host: "${TARGET_DB_HOST}"
-    port: 5432
-    database: "${TARGET_DB_NAME}"
-    user: "${TARGET_DB_USER}"
-    password: "${TARGET_DB_PASSWORD}"
-    schema: "etl_target"
-    connection_pool:
-      max_connections: 20
-      min_connections: 5
-      connection_timeout: 30
-      idle_timeout: 600
-
+# Spark Configuration
 spark:
-  app_name: "ETL_Shared_Framework"
+  app_name: "ETL_Transformation_Pipeline"
   master: "local[*]"
+  log_level: "WARN"
   config:
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
     spark.sql.shuffle.partitions: "200"
-    spark.default.parallelism: "200"
-    spark.executor.memory: "4g"
-    spark.driver.memory: "2g"
-    spark.executor.cores: "4"
-    spark.sql.warehouse.dir: "/opt/spark/warehouse"
+    spark.sql.files.maxPartitionBytes: "134217728"  # 128MB
 
-etl:
-  batch_size: 1000
-  max_retries: 3
-  retry_delay_seconds: 5
-  enable_reconciliation: true
-  enable_data_quality: true
-  max_records_per_run: 0  # 0 = unlimited
+# Source Configuration
+source:
+  type: "database"  # database, staging, incremental
+  format: "jdbc"
+  jdbc:
+    url: "jdbc:postgresql://localhost:5432/etl_db"
+    driver: "org.postgresql.Driver"
+    table: "source_data"
+    user: "etl_user"
+    password: "etl_password"
+  filter: null
+  max_records: 0  # 0 means no limit
   
+# Transformation Configuration
+transformation:
+  batch_size: 1000
+  rules:
+    category_multipliers:
+      PREMIUM: 1.5
+      STANDARD: 1.0
+      BASIC: 0.8
+      VIP: 2.0
+      TRIAL: 0.5
+    priority_thresholds:
+      high: 1000
+      medium: 750
+      low: 300
+    status_mapping:
+      high_value: 750
+      medium_value: 300
+
+# Target Configuration
+target:
+  type: "database"
+  format: "jdbc"
+  jdbc:
+    url: "jdbc:postgresql://localhost:5432/etl_db"
+    driver: "org.postgresql.Driver"
+    table: "target_data"
+    user: "etl_user"
+    password: "etl_password"
+  mode: "upsert"  # insert, update, upsert
+  batch_size: 1000
+
+# Data Quality Configuration
+quality:
+  enabled: true
+  checks:
+    completeness: true
+    uniqueness: true
+    validity: true
+    consistency: true
+  thresholds:
+    error_rate_warning: 0.05  # 5%
+    error_rate_critical: 0.10  # 10%
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/etl_pipeline.log"
+  console: true
+
+# Monitoring Configuration
 monitoring:
-  enable_metrics: true
-  metrics_port: 9090
-  dashboard_refresh_seconds: 30
-  health_check_interval_seconds: 60
-  alert_email: "admin@example.com"
-  alert_thresholds:
-    error_rate_percent: 20
-    critical_error_rate_percent: 50
-    max_concurrent_jobs: 5
+  enabled: true
+  metrics_enabled: true
+  health_check_interval: 60  # seconds
 
-data_quality:
-  enable_profiling: true
-  enable_anomaly_detection: true
-  completeness_threshold: 95
-  uniqueness_threshold: 100
-  validity_threshold: 98
-  consistency_threshold: 95
-
+# Performance Configuration
 performance:
-  enable_caching: true
-  cache_timeout_minutes: 60
-  enable_compression: true
-  compression_codec: "snappy"
+  cache_intermediate: true
+  repartition_enabled: true
+  repartition_columns: ["category"]
+  num_partitions: 10
