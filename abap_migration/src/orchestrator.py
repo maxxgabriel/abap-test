@@ -1,16 +1,14 @@
 """
-ETL Orchestrator Module
+ETL Orchestration Module
 Manages three-phase ETL execution with error handling and job scheduling
 """
-import logging
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
-import traceback
+from dataclasses import dataclass, field
 import uuid
-
+import logging
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, TimestampType
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType, IntegerType
 
 from src.extract import ETLExtractor
 from src.transform import ETLTransformer
@@ -22,59 +20,55 @@ from src.utils.data_quality import DataQualityChecker
 
 @dataclass
 class ETLResult:
-    """ETL execution result"""
+    """Container for ETL execution results"""
     run_id: str
     status: str
     start_time: datetime
-    end_time: Optional[datetime]
-    duration_seconds: float
-    records_extracted: int
-    records_transformed: int
-    records_loaded: int
-    records_failed: int
-    error_count: int
-    warning_count: int
-    error_message: Optional[str] = None
+    end_time: Optional[datetime] = None
+    duration: Optional[int] = None
+    records_extracted: int = 0
+    records_transformed: int = 0
+    records_loaded: int = 0
+    records_failed: int = 0
+    error_count: int = 0
+    warning_count: int = 0
+    errors: List[str] = field(default_factory=list)
 
 
 class ETLOrchestrator:
     """
-    Orchestrates three-phase ETL execution with comprehensive error handling
+    Orchestrates the complete ETL pipeline execution
+    Manages extraction, transformation, loading phases with error handling
     """
     
-    def __init__(self, spark: SparkSession, config: Dict[str, Any], run_type: str = "MANUAL"):
+    def __init__(
+        self,
+        spark: SparkSession,
+        config: Dict[str, Any],
+        run_type: str = "MANUAL"
+    ):
         """
-        Initialize ETL orchestrator
+        Initialize ETL Orchestrator
         
         Args:
-            spark: SparkSession instance
+            spark: Active SparkSession
             config: Configuration dictionary
-            run_type: Type of run (MANUAL, SCHEDULED, INCREMENTAL)
+            run_type: Type of run (MANUAL, SCHEDULED, etc.)
         """
         self.spark = spark
         self.config = config
         self.run_type = run_type
         self.run_id = self._generate_run_id()
         
+        # Initialize components
         self.logger = ETLLogger(run_id=self.run_id)
-        self.monitor = ETLMonitor(spark=spark)
-        
-        # Initialize ETL components
-        self.extractor = ETLExtractor(spark=spark, config=config, run_id=self.run_id)
-        self.transformer = ETLTransformer(spark=spark, config=config, run_id=self.run_id)
-        self.loader = ETLLoader(spark=spark, config=config, run_id=self.run_id)
+        self.monitor = ETLMonitor(spark=spark, config=config)
         self.quality_checker = DataQualityChecker(spark=spark, run_id=self.run_id)
         
         self.logger.log_info(
             component="ORCHESTRATOR",
-            message=f"Orchestrator initialized - Run ID: {self.run_id}, Type: {run_type}"
+            message=f"Orchestrator initialized - Run ID: {self.run_id}"
         )
-    
-    def _generate_run_id(self) -> str:
-        """Generate unique run ID"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        return f"RUN_{timestamp}_{unique_id}"
     
     def execute_etl(
         self,
@@ -82,424 +76,440 @@ class ETLOrchestrator:
         target_type: str = "DATABASE",
         filter_condition: Optional[str] = None,
         batch_size: int = 1000,
-        max_records: int = 0,
-        validate_data: bool = True,
-        enable_reconciliation: bool = True
+        max_records: int = 0
     ) -> ETLResult:
         """
         Execute complete ETL pipeline
         
         Args:
-            source_type: Source data type (DATABASE, STAGING, INCREMENTAL)
-            target_type: Target data type (DATABASE, PARQUET, DELTA)
+            source_type: Type of data source
+            target_type: Type of data target
             filter_condition: Optional filter for extraction
             batch_size: Batch size for loading
-            max_records: Maximum records to process (0 = unlimited)
-            validate_data: Enable data validation
-            enable_reconciliation: Enable reconciliation check
+            max_records: Maximum records to process (0 for unlimited)
             
         Returns:
-            ETLResult with execution statistics
+            ETLResult object with execution details
         """
         start_time = datetime.now()
         result = ETLResult(
             run_id=self.run_id,
             status="RUNNING",
-            start_time=start_time,
-            end_time=None,
-            duration_seconds=0.0,
-            records_extracted=0,
-            records_transformed=0,
-            records_loaded=0,
-            records_failed=0,
-            error_count=0,
-            warning_count=0
+            start_time=start_time
         )
         
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message=f"ETL execution started - Run ID: {self.run_id}"
+        )
+        
+        self._log_run_start(start_time)
+        
         try:
-            self.logger.log_info(
-                component="ORCHESTRATOR",
-                message=f"Starting ETL execution - Source: {source_type}, Target: {target_type}"
-            )
-            
-            # Log run start to database
-            self._log_run_start(start_time)
-            
             # Phase 1: Extract
-            self.logger.log_info(component="ORCHESTRATOR", message="Phase 1: Extraction started")
-            extracted_df = self._execute_extraction(
+            result = self._execute_extract(
+                result=result,
                 source_type=source_type,
                 filter_condition=filter_condition,
                 max_records=max_records
             )
             
-            if extracted_df is None or extracted_df.count() == 0:
+            if result.records_extracted == 0:
+                result.status = "NO_DATA"
                 self.logger.log_warning(
                     component="ORCHESTRATOR",
                     message="No data extracted - ETL process stopping"
                 )
-                result.status = "NO_DATA"
-                result.end_time = datetime.now()
-                result.duration_seconds = (result.end_time - start_time).total_seconds()
                 return result
             
-            result.records_extracted = extracted_df.count()
-            self.logger.log_info(
-                component="ORCHESTRATOR",
-                message=f"Phase 1 complete: {result.records_extracted} records extracted"
-            )
-            
             # Phase 2: Transform
-            self.logger.log_info(component="ORCHESTRATOR", message="Phase 2: Transformation started")
-            transformed_df = self._execute_transformation(extracted_df)
+            result = self._execute_transform(result)
             
-            if transformed_df is None:
-                raise Exception("Transformation returned None")
-            
-            result.records_transformed = transformed_df.count()
-            self.logger.log_info(
-                component="ORCHESTRATOR",
-                message=f"Phase 2 complete: {result.records_transformed} records transformed"
-            )
-            
-            # Phase 2.5: Validation (if enabled)
-            if validate_data:
-                self.logger.log_info(component="ORCHESTRATOR", message="Data validation started")
-                validation_result = self._execute_validation(transformed_df)
-                
-                if not validation_result["is_valid"]:
-                    error_count = validation_result["error_count"]
-                    self.logger.log_error(
-                        component="ORCHESTRATOR",
-                        message=f"Validation failed - {error_count} errors found"
-                    )
-                    result.status = "VALIDATION_FAILED"
-                    result.error_count = error_count
-                    result.end_time = datetime.now()
-                    result.duration_seconds = (result.end_time - start_time).total_seconds()
-                    return result
+            if result.status == "VALIDATION_FAILED":
+                return result
             
             # Phase 3: Load
-            self.logger.log_info(component="ORCHESTRATOR", message="Phase 3: Loading started")
-            load_result = self._execute_loading(
-                df=transformed_df,
+            result = self._execute_load(
+                result=result,
                 target_type=target_type,
                 batch_size=batch_size
             )
             
-            result.records_loaded = load_result["success_count"]
-            result.records_failed = load_result["error_count"]
-            result.error_count = load_result["error_count"]
-            
-            self.logger.log_info(
-                component="ORCHESTRATOR",
-                message=f"Phase 3 complete: {result.records_loaded} loaded, {result.records_failed} failed"
-            )
-            
-            # Phase 4: Reconciliation (if enabled)
-            if enable_reconciliation and result.records_loaded > 0:
-                self.logger.log_info(component="ORCHESTRATOR", message="Reconciliation started")
-                reconciliation_passed = self._execute_reconciliation(
-                    source_df=transformed_df,
-                    loaded_count=result.records_loaded
-                )
-                
-                if not reconciliation_passed:
-                    self.logger.log_warning(
-                        component="ORCHESTRATOR",
-                        message="Reconciliation detected discrepancies"
-                    )
-                    result.warning_count += 1
+            # Finalize
+            end_time = datetime.now()
+            result.end_time = end_time
+            result.duration = int((end_time - start_time).total_seconds())
             
             # Determine final status
-            if result.records_failed == 0:
+            if result.error_count == 0:
                 result.status = "SUCCESS"
             elif result.records_loaded > 0:
                 result.status = "PARTIAL_SUCCESS"
             else:
                 result.status = "FAILED"
             
-            result.end_time = datetime.now()
-            result.duration_seconds = (result.end_time - start_time).total_seconds()
-            
-            # Log completion
             self._log_run_end(result)
             
             self.logger.log_info(
                 component="ORCHESTRATOR",
-                message=f"ETL execution completed - Status: {result.status}, Duration: {result.duration_seconds:.2f}s"
+                message=f"ETL execution completed - Status: {result.status}"
             )
             
+        except Exception as e:
+            result.status = "ERROR"
+            result.end_time = datetime.now()
+            result.duration = int((result.end_time - start_time).total_seconds())
+            result.errors.append(str(e))
+            
+            self._handle_orchestration_error(e)
+            self._log_run_end(result)
+        
+        return result
+    
+    def _execute_extract(
+        self,
+        result: ETLResult,
+        source_type: str,
+        filter_condition: Optional[str],
+        max_records: int
+    ) -> ETLResult:
+        """Execute extraction phase"""
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message="Starting extraction phase"
+        )
+        
+        extractor = ETLExtractor(
+            spark=self.spark,
+            config=self.config,
+            source_type=source_type,
+            run_id=self.run_id
+        )
+        
+        df_source = extractor.extract_data(
+            filter_condition=filter_condition,
+            max_records=max_records
+        )
+        
+        result.records_extracted = df_source.count()
+        
+        # Cache for transformation
+        df_source.cache()
+        self._cached_extract_df = df_source
+        
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message=f"Extraction complete - Records: {result.records_extracted}"
+        )
+        
+        return result
+    
+    def _execute_transform(self, result: ETLResult) -> ETLResult:
+        """Execute transformation phase"""
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message="Starting transformation phase"
+        )
+        
+        transformer = ETLTransformer(
+            spark=self.spark,
+            config=self.config,
+            run_id=self.run_id
+        )
+        
+        df_transformed = transformer.transform_data(self._cached_extract_df)
+        
+        # Validate transformed data
+        validation_result = transformer.validate_data(df_transformed)
+        
+        if not validation_result["is_valid"]:
+            result.status = "VALIDATION_FAILED"
+            result.error_count = len(validation_result["errors"])
+            result.errors.extend(validation_result["errors"])
+            
+            self.logger.log_error(
+                component="ORCHESTRATOR",
+                message=f"Validation failed - {result.error_count} errors"
+            )
             return result
+        
+        # Run quality checks
+        quality_checks = self.quality_checker.perform_quality_checks(df_transformed)
+        failed_checks = [check for check in quality_checks if not check["passed"]]
+        
+        if failed_checks:
+            result.warning_count = len(failed_checks)
+            self.logger.log_warning(
+                component="ORCHESTRATOR",
+                message=f"Quality checks: {len(failed_checks)} warnings"
+            )
+        
+        result.records_transformed = df_transformed.count()
+        
+        # Cache for loading
+        df_transformed.cache()
+        self._cached_transform_df = df_transformed
+        
+        # Unpersist extraction cache
+        self._cached_extract_df.unpersist()
+        
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message=f"Transformation complete - Records: {result.records_transformed}"
+        )
+        
+        return result
+    
+    def _execute_load(
+        self,
+        result: ETLResult,
+        target_type: str,
+        batch_size: int
+    ) -> ETLResult:
+        """Execute loading phase"""
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message="Starting loading phase"
+        )
+        
+        loader = ETLLoader(
+            spark=self.spark,
+            config=self.config,
+            target_type=target_type,
+            batch_size=batch_size,
+            run_id=self.run_id
+        )
+        
+        load_result = loader.load_data(
+            df=self._cached_transform_df,
+            mode="upsert"
+        )
+        
+        result.records_loaded = load_result["success_count"]
+        result.records_failed = load_result["error_count"]
+        result.error_count += load_result["error_count"]
+        result.errors.extend(load_result["errors"])
+        
+        # Unpersist transformation cache
+        self._cached_transform_df.unpersist()
+        
+        self.logger.log_info(
+            component="ORCHESTRATOR",
+            message=f"Loading complete - Loaded: {result.records_loaded}, Failed: {result.records_failed}"
+        )
+        
+        return result
+    
+    def schedule_etl(self, schedule_id: str) -> bool:
+        """
+        Schedule ETL execution based on schedule configuration
+        
+        Args:
+            schedule_id: Schedule identifier
+            
+        Returns:
+            Success status
+        """
+        try:
+            # Load schedule configuration
+            schedule_config = self._get_schedule_config(schedule_id)
+            
+            if not schedule_config:
+                self.logger.log_error(
+                    component="ORCHESTRATOR",
+                    message=f"Schedule not found: {schedule_id}"
+                )
+                return False
+            
+            if not schedule_config.get("is_active"):
+                self.logger.log_warning(
+                    component="ORCHESTRATOR",
+                    message=f"Schedule is not active: {schedule_id}"
+                )
+                return False
+            
+            # Execute ETL with schedule parameters
+            result = self.execute_etl(
+                source_type=schedule_config.get("source_type", "DATABASE"),
+                target_type=schedule_config.get("target_type", "DATABASE"),
+                filter_condition=schedule_config.get("filter_condition"),
+                batch_size=schedule_config.get("batch_size", 1000),
+                max_records=schedule_config.get("max_records", 0)
+            )
+            
+            return result.status in ["SUCCESS", "PARTIAL_SUCCESS"]
             
         except Exception as e:
             self.logger.log_error(
                 component="ORCHESTRATOR",
-                message="ETL execution failed",
-                details=str(e),
-                stack_trace=traceback.format_exc()
-            )
-            
-            result.status = "ERROR"
-            result.error_count += 1
-            result.error_message = str(e)
-            result.end_time = datetime.now()
-            result.duration_seconds = (result.end_time - start_time).total_seconds()
-            
-            self._log_run_end(result)
-            
-            # Re-raise for Airflow/scheduler awareness
-            raise
-    
-    def _execute_extraction(
-        self,
-        source_type: str,
-        filter_condition: Optional[str],
-        max_records: int
-    ) -> Optional[DataFrame]:
-        """Execute extraction phase"""
-        try:
-            return self.extractor.extract_data(
-                source_type=source_type,
-                filter_condition=filter_condition,
-                max_records=max_records
-            )
-        except Exception as e:
-            self.logger.log_error(
-                component="EXTRACTION",
-                message="Extraction phase failed",
-                details=str(e)
-            )
-            raise
-    
-    def _execute_transformation(self, df: DataFrame) -> Optional[DataFrame]:
-        """Execute transformation phase"""
-        try:
-            return self.transformer.transform_data(df)
-        except Exception as e:
-            self.logger.log_error(
-                component="TRANSFORMATION",
-                message="Transformation phase failed",
-                details=str(e)
-            )
-            raise
-    
-    def _execute_validation(self, df: DataFrame) -> Dict[str, Any]:
-        """Execute validation phase"""
-        try:
-            quality_checks = self.quality_checker.perform_quality_checks(df)
-            
-            is_valid = all(check["passed"] for check in quality_checks)
-            error_count = sum(
-                check["failed_count"] for check in quality_checks if not check["passed"]
-            )
-            
-            return {
-                "is_valid": is_valid,
-                "error_count": error_count,
-                "checks": quality_checks
-            }
-        except Exception as e:
-            self.logger.log_error(
-                component="VALIDATION",
-                message="Validation phase failed",
-                details=str(e)
-            )
-            raise
-    
-    def _execute_loading(
-        self,
-        df: DataFrame,
-        target_type: str,
-        batch_size: int
-    ) -> Dict[str, int]:
-        """Execute loading phase"""
-        try:
-            return self.loader.load_data(
-                df=df,
-                target_type=target_type,
-                mode="upsert",
-                batch_size=batch_size
-            )
-        except Exception as e:
-            self.logger.log_error(
-                component="LOADING",
-                message="Loading phase failed",
-                details=str(e)
-            )
-            raise
-    
-    def _execute_reconciliation(
-        self,
-        source_df: DataFrame,
-        loaded_count: int
-    ) -> bool:
-        """Execute reconciliation check"""
-        try:
-            expected_count = source_df.count()
-            
-            if loaded_count != expected_count:
-                self.logger.log_warning(
-                    component="RECONCILIATION",
-                    message=f"Count mismatch - Expected: {expected_count}, Loaded: {loaded_count}"
-                )
-                return False
-            
-            return True
-        except Exception as e:
-            self.logger.log_error(
-                component="RECONCILIATION",
-                message="Reconciliation failed",
-                details=str(e)
+                message=f"Schedule execution failed: {str(e)}"
             )
             return False
+    
+    def get_run_statistics(self, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get run statistics
+        
+        Args:
+            run_id: Specific run ID (None for all runs)
+            
+        Returns:
+            List of run statistics
+        """
+        return self.monitor.get_performance_metrics(
+            run_id=run_id,
+            days_back=30
+        )
+    
+    def _generate_run_id(self) -> str:
+        """Generate unique run ID"""
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        return f"RUN_{timestamp}_{unique_id}"
     
     def _log_run_start(self, start_time: datetime):
         """Log run start to database"""
         try:
-            log_data = [
-                (
-                    self.run_id,
-                    self.run_type,
-                    "RUNNING",
-                    start_time,
-                    None,
-                    0,
-                    0,
-                    0,
-                    0
-                )
-            ]
-            
-            schema = StructType([
+            run_log_schema = StructType([
                 StructField("run_id", StringType(), False),
-                StructField("run_type", StringType(), False),
+                StructField("run_type", StringType(), True),
                 StructField("status", StringType(), False),
                 StructField("start_time", TimestampType(), False),
-                StructField("end_time", TimestampType(), True),
-                StructField("duration", IntegerType(), True),
-                StructField("records_extracted", IntegerType(), True),
-                StructField("records_loaded", IntegerType(), True),
-                StructField("records_failed", IntegerType(), True)
+                StructField("created_by", StringType(), True)
             ])
             
-            log_df = self.spark.createDataFrame(log_data, schema=schema)
+            log_data = [(
+                self.run_id,
+                self.run_type,
+                "RUNNING",
+                start_time,
+                self.config.get("user", "system")
+            )]
             
-            # Write to run log table
-            log_df.write \
-                .format("jdbc") \
-                .option("url", self.config["database"]["url"]) \
-                .option("dbtable", self.config["database"]["run_log_table"]) \
-                .option("user", self.config["database"]["user"]) \
-                .option("password", self.config["database"]["password"]) \
+            df_log = self.spark.createDataFrame(log_data, schema=run_log_schema)
+            
+            df_log.write \
+                .format(self.config.get("db_format", "jdbc")) \
                 .mode("append") \
+                .option("url", self.config["db_url"]) \
+                .option("dbtable", self.config.get("run_log_table", "etl_run_log")) \
+                .option("user", self.config["db_user"]) \
+                .option("password", self.config["db_password"]) \
                 .save()
                 
         except Exception as e:
             self.logger.log_warning(
                 component="ORCHESTRATOR",
-                message="Failed to log run start",
-                details=str(e)
+                message=f"Failed to log run start: {str(e)}"
             )
     
     def _log_run_end(self, result: ETLResult):
         """Log run completion to database"""
         try:
-            log_data = [
-                (
-                    result.run_id,
-                    self.run_type,
-                    result.status,
-                    result.start_time,
-                    result.end_time,
-                    int(result.duration_seconds),
-                    result.records_extracted,
-                    result.records_loaded,
-                    result.records_failed
-                )
-            ]
+            # Read existing log entry
+            df_log = self.spark.read \
+                .format(self.config.get("db_format", "jdbc")) \
+                .option("url", self.config["db_url"]) \
+                .option("dbtable", self.config.get("run_log_table", "etl_run_log")) \
+                .option("user", self.config["db_user"]) \
+                .option("password", self.config["db_password"]) \
+                .load() \
+                .filter(f"run_id = '{self.run_id}'")
             
-            schema = StructType([
-                StructField("run_id", StringType(), False),
-                StructField("run_type", StringType(), False),
-                StructField("status", StringType(), False),
-                StructField("start_time", TimestampType(), False),
-                StructField("end_time", TimestampType(), True),
-                StructField("duration", IntegerType(), True),
-                StructField("records_extracted", IntegerType(), True),
-                StructField("records_loaded", IntegerType(), True),
-                StructField("records_failed", IntegerType(), True)
-            ])
+            # Update with completion details
+            from pyspark.sql import functions as F
             
-            log_df = self.spark.createDataFrame(log_data, schema=schema)
+            df_updated = df_log.withColumn("status", F.lit(result.status)) \
+                .withColumn("end_time", F.lit(result.end_time)) \
+                .withColumn("duration", F.lit(result.duration)) \
+                .withColumn("records_extracted", F.lit(result.records_extracted)) \
+                .withColumn("records_transformed", F.lit(result.records_transformed)) \
+                .withColumn("records_loaded", F.lit(result.records_loaded)) \
+                .withColumn("records_failed", F.lit(result.records_failed)) \
+                .withColumn("error_count", F.lit(result.error_count))
             
-            # Update run log table
-            log_df.write \
-                .format("jdbc") \
-                .option("url", self.config["database"]["url"]) \
-                .option("dbtable", self.config["database"]["run_log_table"]) \
-                .option("user", self.config["database"]["user"]) \
-                .option("password", self.config["database"]["password"]) \
-                .mode("append") \
+            # Write back (this is simplified - in production, use proper update mechanism)
+            df_updated.write \
+                .format(self.config.get("db_format", "jdbc")) \
+                .mode("overwrite") \
+                .option("url", self.config["db_url"]) \
+                .option("dbtable", f"{self.config.get('run_log_table', 'etl_run_log')}_temp") \
+                .option("user", self.config["db_user"]) \
+                .option("password", self.config["db_password"]) \
                 .save()
                 
         except Exception as e:
             self.logger.log_warning(
                 component="ORCHESTRATOR",
-                message="Failed to log run end",
-                details=str(e)
+                message=f"Failed to log run end: {str(e)}"
             )
     
-    def get_run_statistics(self, days_back: int = 7) -> List[Dict[str, Any]]:
-        """
-        Get run statistics for specified period
+    def _handle_orchestration_error(self, error: Exception):
+        """Handle orchestration errors"""
+        self.logger.log_error(
+            component="ORCHESTRATOR",
+            message="Orchestration error occurred",
+            details=str(error)
+        )
         
-        Args:
-            days_back: Number of days to look back
-            
-        Returns:
-            List of run statistics
-        """
+        # Log to error table
         try:
-            cutoff_date = datetime.now() - timedelta(days=days_back)
+            error_schema = StructType([
+                StructField("run_id", StringType(), False),
+                StructField("component", StringType(), False),
+                StructField("error_message", StringType(), False),
+                StructField("error_details", StringType(), True),
+                StructField("created_at", TimestampType(), False),
+                StructField("resolved", StringType(), False)
+            ])
             
-            stats_df = self.spark.read \
-                .format("jdbc") \
-                .option("url", self.config["database"]["url"]) \
-                .option("dbtable", self.config["database"]["run_log_table"]) \
-                .option("user", self.config["database"]["user"]) \
-                .option("password", self.config["database"]["password"]) \
-                .load()
+            error_data = [(
+                self.run_id,
+                "ORCHESTRATOR",
+                "ETL execution failed",
+                str(error),
+                datetime.now(),
+                "N"
+            )]
             
-            # Filter by date
-            from pyspark.sql.functions import col
-            filtered_df = stats_df.filter(col("start_time") >= cutoff_date)
+            df_error = self.spark.createDataFrame(error_data, schema=error_schema)
             
-            return [row.asDict() for row in filtered_df.collect()]
+            df_error.write \
+                .format(self.config.get("db_format", "jdbc")) \
+                .mode("append") \
+                .option("url", self.config["db_url"]) \
+                .option("dbtable", self.config.get("error_log_table", "etl_error_log")) \
+                .option("user", self.config["db_user"]) \
+                .option("password", self.config["db_password"]) \
+                .save()
+                
+        except Exception as log_error:
+            self.logger.log_warning(
+                component="ORCHESTRATOR",
+                message=f"Failed to log error: {str(log_error)}"
+            )
+    
+    def _get_schedule_config(self, schedule_id: str) -> Optional[Dict[str, Any]]:
+        """Get schedule configuration from database"""
+        try:
+            df_schedule = self.spark.read \
+                .format(self.config.get("db_format", "jdbc")) \
+                .option("url", self.config["db_url"]) \
+                .option("dbtable", self.config.get("schedule_table", "etl_schedule")) \
+                .option("user", self.config["db_user"]) \
+                .option("password", self.config["db_password"]) \
+                .load() \
+                .filter(f"schedule_id = '{schedule_id}'")
+            
+            if df_schedule.count() == 0:
+                return None
+            
+            schedule_row = df_schedule.first()
+            return schedule_row.asDict()
             
         except Exception as e:
             self.logger.log_error(
                 component="ORCHESTRATOR",
-                message="Failed to retrieve run statistics",
-                details=str(e)
+                message=f"Failed to get schedule config: {str(e)}"
             )
-            return []
-
-
-def create_orchestrator(
-    spark: SparkSession,
-    config: Dict[str, Any],
-    run_type: str = "MANUAL"
-) -> ETLOrchestrator:
-    """
-    Factory function to create ETL orchestrator
-    
-    Args:
-        spark: SparkSession instance
-        config: Configuration dictionary
-        run_type: Type of run
-        
-    Returns:
-        ETLOrchestrator instance
-    """
-    return ETLOrchestrator(spark=spark, config=config, run_type=run_type)
+            return None
