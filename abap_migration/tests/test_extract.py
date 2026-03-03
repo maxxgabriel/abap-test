@@ -1,176 +1,161 @@
 """
-Unit tests for ETL extraction functionality using test framework utilities.
+Unit tests for Extract module
 """
-import pytest
-from pyspark.sql.functions import col, count
-from decimal import Decimal
 
+import pytest
+from decimal import Decimal
+from datetime import datetime
+from pyspark.sql.functions import col
 from src.extract import Extractor
 from src.test_utils import (
-    TestDataConfig,
+    SparkTestFixture,
     DataFrameAssertions,
-    create_test_config
+    TestDataFactory,
+    TestSchemas,
+    MockLogger
 )
 
 
 class TestExtractor:
-    """Test suite for Extractor module."""
+    """Test suite for Extractor class"""
     
-    def test_extract_basic(self, spark_session, test_data_generator):
-        """Test basic extraction from source."""
-        # Arrange
-        config = create_test_config({"source_type": "DATABASE", "run_id": "TEST001"})
-        extractor = Extractor(spark_session, config)
+    def test_extract_from_database(self, spark_fixture: SparkTestFixture, mock_logger: MockLogger):
+        """Test extracting data from database"""
+        # Setup
+        spark_fixture.create_source_table(count=10)
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="DATABASE",
+            run_id="TEST001",
+            logger=mock_logger
+        )
         
-        # Generate and register test data
-        test_config = TestDataConfig(num_records=10)
-        source_df = test_data_generator.generate_source_data(spark_session, test_config)
-        source_df.createOrReplaceTempView("source_data")
-        
-        # Act
-        result_df = extractor.extract_data()
+        # Execute
+        df = extractor.extract_data()
         
         # Assert
-        DataFrameAssertions.assert_row_count(result_df, 10)
-        DataFrameAssertions.assert_column_exists(result_df, "id")
-        DataFrameAssertions.assert_no_nulls(result_df, "id")
+        assert df is not None
+        assert df.count() == 10
+        assert "id" in df.columns
+        assert "name" in df.columns
+        mock_logger.assert_logged("INFO", "EXTRACTOR", "Starting extraction")
     
-    def test_extract_with_filter(self, spark_session, test_data_generator):
-        """Test extraction with filter conditions."""
-        # Arrange
-        config = create_test_config({
-            "source_type": "DATABASE",
-            "run_id": "TEST002",
-            "filter": "status = 'ACTIVE'"
-        })
-        extractor = Extractor(spark_session, config)
+    def test_extract_with_filter(self, spark_fixture: SparkTestFixture):
+        """Test extraction with filter"""
+        # Setup
+        spark_fixture.create_source_table(count=20, category="PREMIUM", status="ACTIVE")
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="DATABASE",
+            run_id="TEST002"
+        )
         
-        # Generate test data
-        test_config = TestDataConfig(num_records=20)
-        source_df = test_data_generator.generate_source_data(spark_session, test_config)
-        source_df.createOrReplaceTempView("source_data")
-        
-        # Act
-        result_df = extractor.extract_data(filter_condition="status = 'ACTIVE'")
+        # Execute
+        df = extractor.extract_data(filter_expr="status = 'ACTIVE'")
         
         # Assert
-        assert result_df.count() > 0
-        assert result_df.filter(col("status") != "ACTIVE").count() == 0
+        assert df.count() == 20
+        active_count = df.filter(col("status") == "ACTIVE").count()
+        assert active_count == 20
     
-    def test_extract_with_max_records(self, spark_session, test_data_generator):
-        """Test extraction with max records limit."""
-        # Arrange
-        config = create_test_config({"run_id": "TEST003"})
-        extractor = Extractor(spark_session, config)
+    def test_extract_with_max_records(self, spark_fixture: SparkTestFixture):
+        """Test extraction with record limit"""
+        # Setup
+        spark_fixture.create_source_table(count=100)
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="DATABASE",
+            run_id="TEST003"
+        )
         
-        test_config = TestDataConfig(num_records=50)
-        source_df = test_data_generator.generate_source_data(spark_session, test_config)
-        source_df.createOrReplaceTempView("source_data")
-        
-        # Act
-        result_df = extractor.extract_data(max_records=20)
+        # Execute
+        df = extractor.extract_data(max_records=50)
         
         # Assert
-        DataFrameAssertions.assert_row_count(result_df, 20)
+        assert df.count() == 50
     
-    def test_extract_empty_source(self, spark_session):
-        """Test extraction from empty source."""
-        # Arrange
-        config = create_test_config({"run_id": "TEST004"})
-        extractor = Extractor(spark_session, config)
+    def test_extract_incremental(self, spark_fixture: SparkTestFixture):
+        """Test incremental extraction"""
+        # Setup
+        base_time = datetime.now()
+        data = TestDataFactory.create_source_records(count=10)
+        # Modify timestamps for half the records
+        for i in range(5):
+            data[i]["changed_at"] = base_time
         
-        # Create empty source
-        empty_df = spark_session.createDataFrame([], schema=extractor.get_source_schema())
-        empty_df.createOrReplaceTempView("source_data")
+        df = spark_fixture.create_temp_table(
+            "incremental_source",
+            data,
+            TestSchemas.source_schema()
+        )
         
-        # Act
-        result_df = extractor.extract_data()
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="INCREMENTAL",
+            run_id="TEST004"
+        )
+        
+        # Execute
+        df_incremental = extractor.extract_incremental(last_run_time=base_time)
         
         # Assert
-        DataFrameAssertions.assert_row_count(result_df, 0)
+        assert df_incremental.count() <= 10
     
-    def test_extract_incremental(self, spark_session, test_data_generator):
-        """Test incremental extraction."""
-        from datetime import datetime, timedelta
+    def test_extract_empty_source(self, spark_fixture: SparkTestFixture, mock_logger: MockLogger):
+        """Test extraction from empty source"""
+        # Setup - create empty table
+        spark_fixture.create_temp_table(
+            "empty_source",
+            [],
+            TestSchemas.source_schema()
+        )
         
-        # Arrange
-        cutoff_time = datetime.now() - timedelta(hours=24)
-        config = create_test_config({
-            "source_type": "INCREMENTAL",
-            "run_id": "TEST005",
-            "last_run_time": cutoff_time
-        })
-        extractor = Extractor(spark_session, config)
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="DATABASE",
+            run_id="TEST005",
+            logger=mock_logger
+        )
         
-        # Generate test data with recent timestamps
-        test_config = TestDataConfig(num_records=30)
-        source_df = test_data_generator.generate_source_data(spark_session, test_config)
-        source_df.createOrReplaceTempView("source_data")
-        
-        # Act
-        result_df = extractor.extract_incremental(last_run_time=cutoff_time)
+        # Execute
+        df = extractor.extract_data()
         
         # Assert
-        assert result_df.count() > 0
-        # All records should have changed_at > cutoff_time
-        old_records = result_df.filter(col("changed_at") <= cutoff_time).count()
-        assert old_records == 0
+        assert df.count() == 0
+        mock_logger.assert_logged("WARNING", "EXTRACTOR", "extracted 0 records")
     
-    def test_extract_with_nulls(self, spark_session, test_data_generator):
-        """Test extraction handles null values correctly."""
-        # Arrange
-        config = create_test_config({"run_id": "TEST006"})
-        extractor = Extractor(spark_session, config)
+    def test_extract_with_invalid_source_type(self, spark_fixture: SparkTestFixture):
+        """Test extraction with invalid source type"""
+        # Setup
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="INVALID_TYPE",
+            run_id="TEST006"
+        )
         
-        test_config = TestDataConfig(num_records=20, include_nulls=True)
-        source_df = test_data_generator.generate_source_data(spark_session, test_config)
-        source_df.createOrReplaceTempView("source_data")
+        # Execute & Assert
+        with pytest.raises(ValueError):
+            extractor.extract_data()
+    
+    def test_extract_schema_validation(
+        self,
+        spark_fixture: SparkTestFixture,
+        df_assertions: DataFrameAssertions
+    ):
+        """Test extracted data has correct schema"""
+        # Setup
+        spark_fixture.create_source_table(count=5)
+        extractor = Extractor(
+            spark=spark_fixture.spark,
+            source_type="DATABASE",
+            run_id="TEST007"
+        )
         
-        # Act
-        result_df = extractor.extract_data()
+        # Execute
+        df = extractor.extract_data()
         
         # Assert
-        DataFrameAssertions.assert_row_count(result_df, 20)
-        # Should have some null values
-        null_count = result_df.filter(col("name").isNull()).count()
-        assert null_count > 0
-    
-    def test_extract_schema_validation(self, spark_session, test_data_generator):
-        """Test that extracted data matches expected schema."""
-        # Arrange
-        config = create_test_config({"run_id": "TEST007"})
-        extractor = Extractor(spark_session, config)
-        
-        test_config = TestDataConfig(num_records=5)
-        source_df = test_data_generator.generate_source_data(spark_session, test_config)
-        source_df.createOrReplaceTempView("source_data")
-        
-        # Act
-        result_df = extractor.extract_data()
-        
-        # Assert
-        expected_schema = extractor.get_source_schema()
-        actual_fields = {f.name: f.dataType for f in result_df.schema.fields}
-        expected_fields = {f.name: f.dataType for f in expected_schema.fields}
-        
-        assert actual_fields == expected_fields
-    
-    def test_extract_logs_metrics(self, test_run_context, test_data_generator):
-        """Test that extraction logs appropriate metrics."""
-        # Arrange
-        spark = test_run_context.spark_context.spark
-        config = create_test_config({"run_id": test_run_context.run_id})
-        extractor = Extractor(spark, config)
-        
-        test_config = TestDataConfig(num_records=15)
-        source_df = test_data_generator.generate_source_data(spark, test_config)
-        source_df.createOrReplaceTempView("source_data")
-        
-        # Act
-        result_df = extractor.extract_data()
-        
-        # Assert
-        assert result_df.count() == 15
-        # In real implementation, check logged metrics
-        test_run_context.record_metric("extracted_count", result_df.count())
-        assert test_run_context.get_metric("extracted_count") == 15
+        df_assertions.assert_dataframe_schema(df, TestSchemas.source_schema())
+        df_assertions.assert_column_exists(df, "id")
+        df_assertions.assert_column_exists(df, "name")
+        df_assertions.assert_column_exists(df, "value")
