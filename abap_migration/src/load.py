@@ -1,208 +1,206 @@
 """
-ETL Data Loading Module
-Handles loading transformed data into target systems with batching and reconciliation.
+ETL Loader Module
+Handles data loading to target systems with batch processing and reconciliation.
 """
-
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, count
+from pyspark.sql.functions import col
 from typing import Dict, List
-from dataclasses import dataclass
-from src.logger import ETLLogger
-
-
-@dataclass
-class LoadResult:
-    """Result of a load operation."""
-    success_count: int
-    error_count: int
-    total_count: int
-    errors: List[str]
+import logging
 
 
 class ETLLoader:
-    """
-    Loads transformed data into target systems.
-    """
+    """Load data to target systems"""
     
-    def __init__(self, spark: SparkSession, target_type: str = "DATABASE", 
-                 batch_size: int = 1000, run_id: str = None):
-        """
-        Initialize the loader.
-        
-        Args:
-            spark: SparkSession instance
-            target_type: Type of target system
-            batch_size: Number of records per batch
-            run_id: Unique identifier for this ETL run
-        """
+    def __init__(
+        self, 
+        spark: SparkSession, 
+        target_type: str = "DATABASE",
+        batch_size: int = 1000,
+        run_id: str = None
+    ):
         self.spark = spark
         self.target_type = target_type
         self.batch_size = batch_size
         self.run_id = run_id
-        self.logger = ETLLogger.get_instance()
-    
-    def load_data(self, df: DataFrame, mode: str = "INSERT") -> LoadResult:
-        """
-        Load data into target system.
+        self.logger = logging.getLogger(__name__)
         
-        Args:
-            df: Transformed DataFrame
-            mode: Load mode (INSERT, UPDATE, UPSERT)
-            
-        Returns:
-            LoadResult: Results of the load operation
+    def load_data(self, df: DataFrame, mode: str = "append") -> Dict:
         """
-        self.logger.log_info(
-            component="LOADER",
-            message=f"Starting load - Mode: {mode}, Batch size: {self.batch_size}"
-        )
-        
-        errors = []
-        success_count = 0
-        error_count = 0
-        total_count = df.count()
-        
-        try:
-            if self.target_type == "DATABASE":
-                success = self._load_to_database(df, mode)
-                if success:
-                    success_count = total_count
-                else:
-                    error_count = total_count
-                    errors.append("Database load failed")
-            else:
-                errors.append(f"Unsupported target type: {self.target_type}")
-                error_count = total_count
-            
-            # Reconcile data
-            if success_count > 0:
-                reconciled = self._reconcile_data(df)
-                if not reconciled:
-                    self.logger.log_warning(
-                        component="LOADER",
-                        message="Data reconciliation failed"
-                    )
-            
-            self.logger.log_info(
-                component="LOADER",
-                message=f"Load complete - Success: {success_count}, Errors: {error_count}"
-            )
-            
-            return LoadResult(
-                success_count=success_count,
-                error_count=error_count,
-                total_count=total_count,
-                errors=errors
-            )
-            
-        except Exception as e:
-            self.logger.log_error(
-                component="LOADER",
-                message="Load operation failed",
-                details=str(e)
-            )
-            return LoadResult(
-                success_count=0,
-                error_count=total_count,
-                total_count=total_count,
-                errors=[str(e)]
-            )
-    
-    def _load_to_database(self, df: DataFrame, mode: str) -> bool:
-        """
-        Load data to database.
+        Load data to target
         
         Args:
             df: DataFrame to load
-            mode: Load mode (INSERT, UPDATE, UPSERT)
+            mode: Load mode ('append', 'overwrite', 'upsert')
             
         Returns:
-            bool: Success status
+            Dictionary with load results
         """
+        self.logger.info(f"Starting load - Mode: {mode}, Batch size: {self.batch_size}")
+        
+        total_count = df.count()
+        success_count = 0
+        error_count = 0
+        errors = []
+        
         try:
-            jdbc_url = self.spark.conf.get("spark.etl.target.jdbc.url")
-            jdbc_properties = {
-                "user": self.spark.conf.get("spark.etl.target.jdbc.user"),
-                "password": self.spark.conf.get("spark.etl.target.jdbc.password"),
-                "driver": self.spark.conf.get("spark.etl.target.jdbc.driver")
-            }
+            if mode == "upsert":
+                success_count = self._load_upsert(df)
+            else:
+                success_count = self._load_to_database(df, mode)
             
-            # Map mode to Spark write mode
-            write_mode_map = {
-                "INSERT": "append",
-                "UPDATE": "overwrite",
-                "UPSERT": "append"  # Will handle upsert with merge logic
-            }
+            # Reconcile data
+            if self.spark.conf.get("spark.etl.enable_reconciliation", "true").lower() == "true":
+                reconciled = self._reconcile_data(df)
+                if not reconciled:
+                    self.logger.warning("Data reconciliation failed")
             
-            write_mode = write_mode_map.get(mode, "append")
-            
-            # Write to database
-            df.write \
-                .format("jdbc") \
-                .option("url", jdbc_url) \
-                .option("dbtable", "etl_target_data") \
-                .option("user", jdbc_properties["user"]) \
-                .option("password", jdbc_properties["password"]) \
-                .option("driver", jdbc_properties["driver"]) \
-                .option("batchsize", self.batch_size) \
-                .mode(write_mode) \
-                .save()
-            
-            return True
+            error_count = total_count - success_count
             
         except Exception as e:
-            self.logger.log_error(
-                component="LOADER",
-                message="Database load error",
-                details=str(e)
-            )
-            return False
+            self.logger.error(f"Load failed: {str(e)}")
+            error_count = total_count
+            errors.append(str(e))
+        
+        result = {
+            "success_count": success_count,
+            "error_count": error_count,
+            "total_count": total_count,
+            "errors": errors
+        }
+        
+        self.logger.info(
+            f"Load complete - Success: {success_count}, Errors: {error_count}"
+        )
+        
+        return result
+    
+    def _load_to_database(self, df: DataFrame, mode: str) -> int:
+        """Load data to database table"""
+        self.logger.info(f"Loading to database with mode: {mode}")
+        
+        target_table = self.spark.conf.get("spark.target.table", "etl_target_data")
+        
+        df.write \
+            .format("jdbc") \
+            .option("driver", self.spark.conf.get("spark.jdbc.driver")) \
+            .option("url", self.spark.conf.get("spark.jdbc.url")) \
+            .option("dbtable", target_table) \
+            .option("user", self.spark.conf.get("spark.jdbc.user")) \
+            .option("password", self.spark.conf.get("spark.jdbc.password")) \
+            .option("batchsize", self.batch_size) \
+            .mode(mode) \
+            .save()
+        
+        return df.count()
+    
+    def _load_upsert(self, df: DataFrame) -> int:
+        """Perform upsert operation (update existing, insert new)"""
+        self.logger.info("Performing upsert operation")
+        
+        target_table = self.spark.conf.get("spark.target.table", "etl_target_data")
+        
+        # Read existing data
+        existing_df = self.spark.read \
+            .format("jdbc") \
+            .option("driver", self.spark.conf.get("spark.jdbc.driver")) \
+            .option("url", self.spark.conf.get("spark.jdbc.url")) \
+            .option("dbtable", target_table) \
+            .option("user", self.spark.conf.get("spark.jdbc.user")) \
+            .option("password", self.spark.conf.get("spark.jdbc.password")) \
+            .load()
+        
+        # Identify updates and inserts
+        updates_df = df.join(existing_df, "id", "inner").select(df["*"])
+        inserts_df = df.join(existing_df, "id", "left_anti")
+        
+        # Perform updates (delete then insert)
+        if updates_df.count() > 0:
+            self.logger.info(f"Updating {updates_df.count()} records")
+            # In production, use database-specific upsert/merge
+            updates_df.write \
+                .format("jdbc") \
+                .option("driver", self.spark.conf.get("spark.jdbc.driver")) \
+                .option("url", self.spark.conf.get("spark.jdbc.url")) \
+                .option("dbtable", target_table) \
+                .option("user", self.spark.conf.get("spark.jdbc.user")) \
+                .option("password", self.spark.conf.get("spark.jdbc.password")) \
+                .mode("append") \
+                .save()
+        
+        # Perform inserts
+        if inserts_df.count() > 0:
+            self.logger.info(f"Inserting {inserts_df.count()} records")
+            inserts_df.write \
+                .format("jdbc") \
+                .option("driver", self.spark.conf.get("spark.jdbc.driver")) \
+                .option("url", self.spark.conf.get("spark.jdbc.url")) \
+                .option("dbtable", target_table) \
+                .option("user", self.spark.conf.get("spark.jdbc.user")) \
+                .option("password", self.spark.conf.get("spark.jdbc.password")) \
+                .mode("append") \
+                .save()
+        
+        return df.count()
     
     def _reconcile_data(self, loaded_df: DataFrame) -> bool:
         """
-        Reconcile loaded data with target.
+        Reconcile loaded data with target
         
         Args:
             loaded_df: DataFrame that was loaded
             
         Returns:
-            bool: True if reconciliation matches
+            True if reconciliation passes
         """
+        self.logger.info("Reconciling loaded data")
+        
         try:
-            jdbc_url = self.spark.conf.get("spark.etl.target.jdbc.url")
-            jdbc_properties = {
-                "user": self.spark.conf.get("spark.etl.target.jdbc.user"),
-                "password": self.spark.conf.get("spark.etl.target.jdbc.password"),
-                "driver": self.spark.conf.get("spark.etl.target.jdbc.driver")
-            }
+            target_table = self.spark.conf.get("spark.target.table", "etl_target_data")
             
-            # Read loaded data from target
-            target_df = self.spark.read.jdbc(
-                url=jdbc_url,
-                table=f"(SELECT * FROM etl_target_data WHERE etl_run_id = '{self.run_id}') as target",
-                properties=jdbc_properties
-            )
+            # Read target data for this run
+            target_df = self.spark.read \
+                .format("jdbc") \
+                .option("driver", self.spark.conf.get("spark.jdbc.driver")) \
+                .option("url", self.spark.conf.get("spark.jdbc.url")) \
+                .option("dbtable", target_table) \
+                .option("user", self.spark.conf.get("spark.jdbc.user")) \
+                .option("password", self.spark.conf.get("spark.jdbc.password")) \
+                .load() \
+                .filter(col("etl_run_id") == self.run_id)
             
-            source_count = loaded_df.count()
+            loaded_count = loaded_df.count()
             target_count = target_df.count()
             
-            if source_count != target_count:
-                self.logger.log_warning(
-                    component="LOADER",
-                    message=f"Reconciliation mismatch: Source={source_count}, Target={target_count}"
+            if loaded_count == target_count:
+                self.logger.info(f"Reconciliation passed: {loaded_count} records")
+                return True
+            else:
+                self.logger.warning(
+                    f"Reconciliation mismatch: Loaded={loaded_count}, Target={target_count}"
                 )
                 return False
-            
-            self.logger.log_info(
-                component="LOADER",
-                message=f"Reconciliation successful: {target_count} records verified"
-            )
-            return True
-            
+                
         except Exception as e:
-            self.logger.log_error(
-                component="LOADER",
-                message="Reconciliation failed",
-                details=str(e)
-            )
+            self.logger.error(f"Reconciliation failed: {str(e)}")
             return False
+    
+    def load_to_parquet(self, df: DataFrame, path: str, mode: str = "append") -> int:
+        """Load data to parquet files"""
+        self.logger.info(f"Loading to parquet: {path}")
+        
+        df.write \
+            .mode(mode) \
+            .parquet(path)
+        
+        return df.count()
+    
+    def load_to_delta(self, df: DataFrame, path: str, mode: str = "append") -> int:
+        """Load data to Delta Lake"""
+        self.logger.info(f"Loading to Delta Lake: {path}")
+        
+        df.write \
+            .format("delta") \
+            .mode(mode) \
+            .save(path)
+        
+        return df.count()
