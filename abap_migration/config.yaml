@@ -1,81 +1,145 @@
-# ETL Monitoring Configuration
+# ETL Data Initialization Configuration
 
+# Application settings
+app:
+  name: "ETL Data Initializer"
+  version: "1.0.0"
+  environment: "development"
+
+# Spark configuration
 spark:
-  app_name: "ETL_Monitoring"
+  app_name: "ETL_Data_Initialization"
   master: "local[*]"
-  config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
-    spark.driver.memory: "4g"
-    spark.executor.memory: "4g"
+  log_level: "WARN"
+  sql:
+    shuffle_partitions: 200
+    adaptive_enabled: true
 
+# Data generation settings
+data_generation:
+  categories:
+    - "PREMIUM"
+    - "STANDARD"
+    - "BASIC"
+    - "VIP"
+    - "TRIAL"
+  
+  statuses:
+    - "ACTIVE"
+    - "INACTIVE"
+    - "PENDING"
+    - "ARCHIVED"
+  
+  value_range:
+    min: 50
+    max: 1000
+  
+  default_rows:
+    source: 100
+    staging: 50
+
+# File paths
+paths:
+  source_data: "data/source/etl_source_data"
+  config_data: "data/config/etl_config"
+  schedule_data: "data/schedule/etl_schedule"
+  staging_data: "data/staging/etl_staging"
+  target_data: "data/target/etl_target_data"
+  logs: "logs"
+
+# Business rules
+business_rules:
+  multipliers:
+    PREMIUM: 1.5
+    STANDARD: 1.2
+    BASIC: 1.0
+    VIP: 2.0
+    TRIAL: 0.8
+  
+  thresholds:
+    high_value: 750
+    medium_value: 300
+    low_value: 0
+  
+  priority_mapping:
+    high: 1
+    medium: 3
+    low: 5
+
+# ETL configuration
+etl:
+  batch_size: 1000
+  max_retries: 3
+  retry_delay_seconds: 5
+  enable_reconciliation: true
+  
+  source_types:
+    - "DATABASE"
+    - "STAGING"
+    - "INCREMENTAL"
+  
+  target_types:
+    - "DATABASE"
+    - "FILE"
+    - "WAREHOUSE"
+  
+  load_modes:
+    - "INSERT"
+    - "UPDATE"
+    - "UPSERT"
+
+# Data quality settings
+data_quality:
+  enable_checks: true
+  check_types:
+    - "completeness"
+    - "uniqueness"
+    - "validity"
+    - "consistency"
+  
+  thresholds:
+    completeness: 0.95
+    uniqueness: 1.0
+    validity: 0.98
+  
+  alert_on_failure: true
+
+# Monitoring and alerting
 monitoring:
-  dashboard:
-    default_days_back: 7
-    refresh_interval_seconds: 300
+  enable_dashboard: true
+  retention_days: 90
+  alert_email: "admin@example.com"
+  health_check_interval_minutes: 15
   
-  performance:
-    default_lookback_days: 30
-    throughput_calculation_enabled: true
-  
-  error_tracking:
-    default_days_back: 7
-    auto_resolve_days: 90
-  
-  health_check:
-    max_running_jobs: 5
-    error_rate_warning_threshold: 20.0
-    error_rate_critical_threshold: 50.0
-    check_interval_minutes: 15
-  
-  sla:
-    default_threshold_minutes: 60
-    enable_compliance_tracking: true
+  metrics:
+    - "records_processed"
+    - "duration_seconds"
+    - "error_rate"
+    - "throughput"
 
-alerts:
-  enabled: true
-  channels:
-    - email
-    - slack
-  
-  email:
-    smtp_host: "smtp.example.com"
-    smtp_port: 587
-    from_address: "etl-monitoring@example.com"
-    to_addresses:
-      - "admin@example.com"
-  
-  slack:
-    webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-    channel: "#etl-alerts"
-
-data_sources:
-  run_log:
-    format: "delta"
-    path: "/path/to/etl_run_log"
-    partition_by: ["date", "etl_type"]
-  
-  error_log:
-    format: "delta"
-    path: "/path/to/etl_error_log"
-    partition_by: ["date", "component"]
-
-reporting:
-  enable_hourly_trends: true
-  enable_category_stats: true
-  enable_sla_tracking: true
-  
-  export:
-    format: "parquet"
-    path: "/path/to/monitoring_reports"
-    retention_days: 180
-
+# Logging configuration
 logging:
   level: "INFO"
-  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
-  file:
-    enabled: true
-    path: "/var/log/etl_monitoring.log"
-    max_bytes: 10485760  # 10MB
-    backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/etl_init_data.log"
+  max_file_size_mb: 10
+  backup_count: 5
+
+# Schedule frequencies
+schedule:
+  frequencies:
+    - "HOURLY"
+    - "DAILY"
+    - "WEEKLY"
+    - "MONTHLY"
+  
+  default_start_time: "02:00:00"
+  timezone: "UTC"
+
+# Database connection (if needed)
+database:
+  jdbc_url: "jdbc:postgresql://localhost:5432/etl_db"
+  driver: "org.postgresql.Driver"
+  user: "etl_user"
+  password: "${DB_PASSWORD}"
+  pool_size: 10
