@@ -1,52 +1,141 @@
-# ETL Loading Configuration
+# ETL Transformation Configuration
 
 # Spark Configuration
 spark:
-  app_name: "ETL_Loading_Module"
+  app_name: "ETL_Transformation_Module"
   master: "local[*]"
   config:
     spark.sql.shuffle.partitions: "200"
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.default.parallelism: "8"
+    spark.sql.autoBroadcastJoinThreshold: "10485760"
 
-# Loading Configuration
-loading:
-  batch_size: 1000
-  target_format: "parquet"
-  target_table: "etl_target_data"
-  target_path: "/tmp/etl_target"
-  enable_reconciliation: true
+# Transformation Configuration
+transformation:
+  # Category multipliers for value transformation
+  category_multipliers:
+    PREMIUM: 1.5
+    VIP: 1.8
+    STANDARD: 1.0
+    BASIC: 0.9
+    TRIAL: 0.8
+    UNCATEGORIZED: 1.0
   
-# Mode Configuration
-modes:
-  default: "UPSERT"
-  available:
-    - "INSERT"
-    - "UPDATE"
-    - "UPSERT"
+  # Priority calculation thresholds
+  priority_thresholds:
+    priority_1: 1000  # Highest priority
+    priority_2: 750   # High priority
+    priority_3: 500   # Medium priority
+    priority_4: 250   # Low priority
+    priority_5: 0     # Lowest priority
+  
+  # Business rules configuration
+  business_rules:
+    high_value_threshold: 750
+    medium_value_threshold: 300
+    vip_priority_override: true
+    premium_bonus_enabled: true
 
-# Performance Tuning
+# Validation Configuration
+validation:
+  # Value constraints
+  min_value: 0
+  max_value: 999999.99
+  
+  # Field constraints
+  max_name_length: 100
+  max_id_length: 10
+  
+  # Valid categories (empty list = no validation)
+  valid_categories:
+    - PREMIUM
+    - VIP
+    - STANDARD
+    - BASIC
+    - TRIAL
+    - UNCATEGORIZED
+  
+  # Valid statuses
+  valid_statuses:
+    - HIGH_VALUE
+    - MEDIUM_VALUE
+    - LOW_VALUE
+    - INVALID
+    - UNKNOWN
+  
+  # Validation thresholds
+  max_null_percentage: 5.0  # Maximum percentage of null values allowed
+  max_duplicate_percentage: 1.0  # Maximum percentage of duplicates allowed
+  
+  # Data quality rules
+  quality_rules:
+    require_unique_ids: true
+    require_non_null_names: true
+    require_positive_values: true
+    require_valid_priority: true
+    check_status_consistency: true
+
+# Enrichment Configuration
+enrichment:
+  # Value tier definitions
+  value_tiers:
+    TIER_1: 1000
+    TIER_2: 500
+    TIER_3: 250
+    TIER_4: 0
+  
+  # Discount configuration
+  discounts:
+    TRIAL: 0.20
+    BASIC: 0.10
+    STANDARD: 0.00
+    PREMIUM: 0.00
+    VIP: 0.00
+
+# Data Quality Configuration
+data_quality:
+  # Completeness checks
+  completeness:
+    critical_fields:
+      - id
+      - name
+      - value
+      - category
+    required_fields:
+      - status
+      - priority
+  
+  # Consistency checks
+  consistency:
+    check_value_status_alignment: true
+    check_category_priority_alignment: true
+    check_transformation_logic: true
+  
+  # Anomaly detection
+  anomaly_detection:
+    enabled: true
+    z_score_threshold: 3.0
+    iqr_multiplier: 1.5
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  handlers:
+    console:
+      enabled: true
+    file:
+      enabled: true
+      filename: "logs/transformation.log"
+      max_bytes: 10485760  # 10MB
+      backup_count: 5
+
+# Performance Configuration
 performance:
-  max_partitions: 50
-  min_partition_size_mb: 128
-  compression: "snappy"
-  write_mode: "append"
-
-# Error Handling
-error_handling:
-  max_retries: 3
-  retry_delay_seconds: 5
-  log_errors: true
-  continue_on_error: false
-
-# Reconciliation
-reconciliation:
-  enabled: true
-  tolerance_percentage: 0.01
-  sample_size: 1000
-
-# Monitoring
-monitoring:
-  log_level: "INFO"
-  metrics_enabled: true
-  alert_on_failure: true
+  batch_size: 1000
+  cache_intermediate_results: true
+  repartition_output: true
+  output_partitions: 10
+  checkpoint_enabled: false
+  checkpoint_dir: "/tmp/spark_checkpoint"
