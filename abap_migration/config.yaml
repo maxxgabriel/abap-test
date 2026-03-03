@@ -1,118 +1,84 @@
-# ETL Framework Configuration
+# Shared Framework Configuration
+spark:
+  app_name: "ETL_Framework"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.dynamicAllocation.enabled: true
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+    spark.executor.cores: 4
+    spark.sql.sources.partitionOverwriteMode: "dynamic"
 
-# Database Settings
 database:
-  jdbc_url: "jdbc:postgresql://localhost:5432/etl_db"
-  driver: "org.postgresql.Driver"
-  user: "etl_user"
-  password: "${ETL_DB_PASSWORD}"
-  connection_pool:
-    min_connections: 2
-    max_connections: 10
-    connection_timeout: 30000
-
-# Source Configuration
-source:
-  type: "database"  # database, staging, incremental
-  table_name: "source_data"
-  filter: ""
-  max_records: 0  # 0 = no limit
-  incremental:
-    enabled: false
-    timestamp_column: "changed_at"
-    last_run_tracking: true
-
-# Target Configuration
-target:
-  type: "database"
-  table_name: "target_data"
-  mode: "upsert"  # insert, update, upsert
-  batch_size: 1000
-  enable_reconciliation: true
-
-# Transformation Rules
-transformation:
-  normalize_names: true
-  calculate_priority: true
-  apply_business_rules: true
-  enrichment_enabled: true
+  source:
+    jdbc_url: "jdbc:postgresql://localhost:5432/source_db"
+    driver: "org.postgresql.Driver"
+    user: "etl_user"
+    password_env: "DB_SOURCE_PASSWORD"
+    connection_properties:
+      fetchsize: 10000
+      batchsize: 10000
   
-  category_multipliers:
-    PREMIUM: 1.5
-    STANDARD: 1.2
-    BASIC: 1.0
-    VIP: 2.0
-    TRIAL: 0.8
+  target:
+    jdbc_url: "jdbc:postgresql://localhost:5432/target_db"
+    driver: "org.postgresql.Driver"
+    user: "etl_user"
+    password_env: "DB_TARGET_PASSWORD"
+    connection_properties:
+      batchsize: 10000
+      reWriteBatchedInserts: true
 
-  priority_thresholds:
-    high: 750
-    medium: 300
-    low: 0
-
-# Validation Settings
-validation:
-  enabled: true
-  fail_on_validation_error: true
-  checks:
-    - completeness
-    - uniqueness
-    - validity
-    - consistency
-
-# Data Quality
-data_quality:
-  enabled: true
-  profile_data: true
-  detect_anomalies: true
-  quality_threshold: 95.0
-
-# Logging
 logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file_path: "logs/etl_process.log"
-  max_file_size: 10485760  # 10MB
-  backup_count: 5
-  console_output: true
+  file:
+    enabled: true
+    path: "logs/etl_framework.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+  console:
+    enabled: true
+  database:
+    enabled: true
+    table: "etl_run_log"
 
-# Monitoring
-monitoring:
-  enabled: true
-  metrics_enabled: true
-  alert_on_failure: true
-  alert_email: "admin@example.com"
-  health_check_interval: 300  # seconds
-  
-  thresholds:
-    error_rate_warning: 20.0
-    error_rate_critical: 50.0
-    max_running_jobs: 5
-
-# Performance
-performance:
-  parallel_processing: true
-  max_workers: 4
-  partition_size: 10000
-  cache_enabled: true
-  cache_size: 100
-
-# Error Handling
-error_handling:
+etl:
+  batch_size: 1000
   max_retries: 3
-  retry_delay: 5  # seconds
-  continue_on_error: false
-  error_threshold: 10  # max errors before stopping
+  retry_delay_seconds: 5
+  validation_enabled: true
+  reconciliation_enabled: true
+  quality_checks_enabled: true
+  
+quality:
+  completeness_threshold: 0.95
+  uniqueness_check: true
+  validity_rules:
+    - field: "value"
+      type: "range"
+      min: 0
+      max: 1000000
+    - field: "priority"
+      type: "range"
+      min: 1
+      max: 5
 
-# Retention
-retention:
-  log_retention_days: 90
-  staging_retention_days: 7
-  archive_old_runs: true
+monitoring:
+  health_check_interval_seconds: 300
+  alert_email: "admin@example.com"
+  dashboard_retention_days: 30
+  error_threshold_percent: 20
+  
+performance:
+  cache_intermediate_results: true
+  checkpoint_enabled: true
+  checkpoint_interval: 100
+  repartition_size: 200
 
-# Feature Flags
-features:
-  incremental_load: true
-  data_profiling: true
-  anomaly_detection: true
-  auto_recovery: true
-  test_mode: false
+paths:
+  staging: "/tmp/etl_staging"
+  checkpoint: "/tmp/etl_checkpoint"
+  output: "/tmp/etl_output"
