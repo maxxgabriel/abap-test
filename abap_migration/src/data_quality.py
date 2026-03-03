@@ -1,11 +1,12 @@
 """
 PySpark Data Quality Validation Framework
-Implements comprehensive data quality checks including completeness, uniqueness, validity, and consistency
+Implements comprehensive data quality checks including null/empty field validation,
+duplicate detection, and business rule validations using DataFrame operations.
 """
 
-from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, TimestampType, BooleanType
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType, IntegerType, TimestampType
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,19 +14,19 @@ import logging
 
 
 @dataclass
-class QualityCheck:
-    """Data class representing a single quality check result"""
+class QualityCheckResult:
+    """Result of a data quality check"""
     check_name: str
     check_type: str
     passed: bool
     failed_count: int
     message: str
-    details: Dict = field(default_factory=dict)
+    details: Optional[Dict] = None
 
 
 @dataclass
 class DataProfile:
-    """Data class representing data profiling results"""
+    """Statistical profile of dataset"""
     total_records: int
     null_count: int
     duplicate_count: int
@@ -34,127 +35,116 @@ class DataProfile:
     avg_value: float
     std_deviation: float
     unique_categories: int
-    additional_metrics: Dict = field(default_factory=dict)
 
 
 class DataQualityValidator:
     """
-    Comprehensive data quality validation framework for PySpark
-    Provides null/empty field checks, duplicate detection, and business rule validations
+    Comprehensive data quality validation framework for PySpark DataFrames.
+    Performs completeness, uniqueness, validity, and consistency checks.
     """
     
     def __init__(self, spark: SparkSession, run_id: str, config: Dict):
         """
-        Initialize the data quality validator
+        Initialize data quality validator.
         
         Args:
             spark: SparkSession instance
-            run_id: Unique identifier for this run
-            config: Configuration dictionary
+            run_id: Unique identifier for ETL run
+            config: Configuration dictionary with validation rules
         """
         self.spark = spark
         self.run_id = run_id
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(__name__)
         
-        # Define critical fields that should not be null
-        self.critical_fields = config.get('critical_fields', [
-            'id', 'name', 'value'
-        ])
+        # Load validation rules from config
+        self.required_fields = config.get('quality', {}).get('required_fields', [])
+        self.unique_keys = config.get('quality', {}).get('unique_keys', [])
+        self.value_ranges = config.get('quality', {}).get('value_ranges', {})
+        self.business_rules = config.get('quality', {}).get('business_rules', {})
         
-        # Define valid value ranges
-        self.value_ranges = config.get('value_ranges', {
-            'value': {'min': 0, 'max': 1000000},
-            'transformed_value': {'min': 0, 'max': 1000000},
-            'priority': {'min': 1, 'max': 5}
-        })
-        
-        # Define valid categories
-        self.valid_categories = config.get('valid_categories', [
-            'PREMIUM', 'STANDARD', 'BASIC', 'VIP', 'TRIAL', 'UNCATEGORIZED'
-        ])
-    
-    def perform_quality_checks(self, df: DataFrame) -> List[QualityCheck]:
+    def perform_quality_checks(self, df: DataFrame) -> List[QualityCheckResult]:
         """
-        Perform all quality checks on the DataFrame
+        Execute all configured data quality checks.
         
         Args:
-            df: Input DataFrame to validate
+            df: DataFrame to validate
             
         Returns:
-            List of QualityCheck results
+            List of QualityCheckResult objects
         """
-        self.logger.info(f"Starting data quality checks for run {self.run_id}")
+        self.logger.info(f"Starting data quality checks for run_id: {self.run_id}")
         
-        checks = []
+        results = []
         
-        # Run all quality check methods
-        checks.append(self.check_completeness(df))
-        checks.append(self.check_uniqueness(df))
-        checks.append(self.check_validity(df))
-        checks.append(self.check_consistency(df))
-        checks.append(self.check_value_ranges(df))
-        checks.append(self.check_category_validity(df))
-        checks.append(self.check_data_freshness(df))
+        # Execute all quality checks
+        results.append(self.check_completeness(df))
+        results.append(self.check_uniqueness(df))
+        results.append(self.check_validity(df))
+        results.append(self.check_consistency(df))
+        results.append(self.check_business_rules(df))
         
         # Count passed/failed
-        passed_count = sum(1 for check in checks if check.passed)
-        failed_count = len(checks) - passed_count
+        passed = sum(1 for r in results if r.passed)
+        failed = sum(1 for r in results if not r.passed)
         
-        self.logger.info(
-            f"Quality checks complete: {passed_count} passed, {failed_count} failed"
-        )
+        self.logger.info(f"Quality checks complete: {passed} passed, {failed} failed")
         
-        return checks
+        return results
     
-    def check_completeness(self, df: DataFrame) -> QualityCheck:
+    def check_completeness(self, df: DataFrame) -> QualityCheckResult:
         """
-        Check for null or empty values in critical fields
+        Check for null or empty values in required fields.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to check
             
         Returns:
-            QualityCheck result
+            QualityCheckResult with completeness validation results
         """
-        self.logger.info("Running completeness check")
+        self.logger.info("Performing completeness check")
         
-        # Build condition to check for null or empty in critical fields
+        required_fields = self.required_fields or ['id', 'name', 'value']
+        
+        # Build condition to check all required fields
         null_conditions = []
-        for field in self.critical_fields:
+        for field in required_fields:
             if field in df.columns:
+                # Check for null or empty string
                 null_conditions.append(
                     F.col(field).isNull() | 
-                    (F.col(field) == "") |
-                    (F.trim(F.col(field)) == "")
+                    (F.col(field) == '') |
+                    (F.trim(F.col(field)) == '')
                 )
         
         if not null_conditions:
-            return QualityCheck(
+            return QualityCheckResult(
                 check_name="Completeness Check",
                 check_type="COMPLETENESS",
                 passed=True,
                 failed_count=0,
-                message="No critical fields to check"
+                message="No required fields configured"
             )
         
-        # Count records with any null/empty critical field
+        # Combine all conditions with OR
         combined_condition = null_conditions[0]
         for condition in null_conditions[1:]:
             combined_condition = combined_condition | condition
         
+        # Count records with null/empty required fields
         null_count = df.filter(combined_condition).count()
         
-        # Get detailed breakdown by field
-        field_null_counts = {}
-        for field in self.critical_fields:
+        # Get detailed null counts per field
+        null_details = {}
+        for field in required_fields:
             if field in df.columns:
                 field_null_count = df.filter(
                     F.col(field).isNull() | 
-                    (F.col(field) == "") |
-                    (F.trim(F.col(field)) == "")
+                    (F.col(field) == '') |
+                    (F.trim(F.col(field)) == '')
                 ).count()
-                field_null_counts[field] = field_null_count
+                if field_null_count > 0:
+                    null_details[field] = field_null_count
         
         passed = null_count == 0
         message = (
@@ -162,124 +152,156 @@ class DataQualityValidator:
             else f"{null_count} records with incomplete data"
         )
         
-        return QualityCheck(
+        return QualityCheckResult(
             check_name="Completeness Check",
             check_type="COMPLETENESS",
             passed=passed,
             failed_count=null_count,
             message=message,
-            details={'field_null_counts': field_null_counts}
+            details=null_details if null_details else None
         )
     
-    def check_uniqueness(self, df: DataFrame) -> QualityCheck:
+    def check_uniqueness(self, df: DataFrame) -> QualityCheckResult:
         """
-        Check for duplicate IDs
+        Check for duplicate records based on unique key fields.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to check
             
         Returns:
-            QualityCheck result
+            QualityCheckResult with uniqueness validation results
         """
-        self.logger.info("Running uniqueness check")
+        self.logger.info("Performing uniqueness check")
         
-        if 'id' not in df.columns:
-            return QualityCheck(
+        unique_keys = self.unique_keys or ['id']
+        
+        # Filter out keys that don't exist in the DataFrame
+        existing_keys = [key for key in unique_keys if key in df.columns]
+        
+        if not existing_keys:
+            return QualityCheckResult(
                 check_name="Uniqueness Check",
                 check_type="UNIQUENESS",
                 passed=True,
                 failed_count=0,
-                message="No ID field to check"
+                message="No unique keys configured or found"
             )
         
         total_count = df.count()
-        unique_count = df.select('id').distinct().count()
+        unique_count = df.select(existing_keys).distinct().count()
         duplicate_count = total_count - unique_count
         
-        # Get examples of duplicate IDs
-        duplicate_ids = []
+        # Find actual duplicate IDs for reporting
+        duplicate_details = {}
         if duplicate_count > 0:
-            duplicate_df = (
-                df.groupBy('id')
+            duplicates_df = (
+                df.groupBy(existing_keys)
                 .count()
                 .filter(F.col('count') > 1)
                 .orderBy(F.desc('count'))
                 .limit(10)
             )
-            duplicate_ids = [
-                {'id': row['id'], 'count': row['count']} 
-                for row in duplicate_df.collect()
+            
+            duplicate_details['sample_duplicates'] = [
+                row.asDict() for row in duplicates_df.collect()
             ]
         
         passed = duplicate_count == 0
         message = (
             "All IDs are unique" if passed 
-            else f"{duplicate_count} duplicate IDs found"
+            else f"{duplicate_count} duplicate records found"
         )
         
-        return QualityCheck(
+        return QualityCheckResult(
             check_name="Uniqueness Check",
             check_type="UNIQUENESS",
             passed=passed,
             failed_count=duplicate_count,
             message=message,
-            details={
-                'total_records': total_count,
-                'unique_records': unique_count,
-                'duplicate_examples': duplicate_ids
-            }
+            details=duplicate_details if duplicate_details else None
         )
     
-    def check_validity(self, df: DataFrame) -> QualityCheck:
+    def check_validity(self, df: DataFrame) -> QualityCheckResult:
         """
-        Check for invalid values (negative numbers, invalid priorities, etc.)
+        Check for invalid values based on defined ranges and constraints.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to check
             
         Returns:
-            QualityCheck result
+            QualityCheckResult with validity validation results
         """
-        self.logger.info("Running validity check")
+        self.logger.info("Performing validity check")
         
         invalid_conditions = []
+        validation_details = {}
         
-        # Check for negative values
+        # Check numeric value ranges
         if 'value' in df.columns:
-            invalid_conditions.append(F.col('value') < 0)
+            # Values must be positive
+            min_value = self.value_ranges.get('value', {}).get('min', 0)
+            max_value = self.value_ranges.get('value', {}).get('max', float('inf'))
+            
+            invalid_conditions.append(
+                (F.col('value') < min_value) | (F.col('value') > max_value)
+            )
+            
+            # Count invalid values
+            invalid_value_count = df.filter(
+                (F.col('value') < min_value) | (F.col('value') > max_value)
+            ).count()
+            if invalid_value_count > 0:
+                validation_details['invalid_value_count'] = invalid_value_count
         
         if 'transformed_value' in df.columns:
-            invalid_conditions.append(F.col('transformed_value') < 0)
+            min_value = self.value_ranges.get('transformed_value', {}).get('min', 0)
+            invalid_conditions.append(F.col('transformed_value') < min_value)
+            
+            invalid_transformed_count = df.filter(
+                F.col('transformed_value') < min_value
+            ).count()
+            if invalid_transformed_count > 0:
+                validation_details['invalid_transformed_count'] = invalid_transformed_count
         
-        # Check for invalid priority
+        # Check priority range (1-5)
         if 'priority' in df.columns:
+            priority_min = self.value_ranges.get('priority', {}).get('min', 1)
+            priority_max = self.value_ranges.get('priority', {}).get('max', 5)
+            
             invalid_conditions.append(
-                (F.col('priority') < 1) | (F.col('priority') > 5)
+                (F.col('priority') < priority_min) | 
+                (F.col('priority') > priority_max)
             )
+            
+            invalid_priority_count = df.filter(
+                (F.col('priority') < priority_min) | 
+                (F.col('priority') > priority_max)
+            ).count()
+            if invalid_priority_count > 0:
+                validation_details['invalid_priority_count'] = invalid_priority_count
         
-        # Check for empty category
+        # Check category is not null/empty
         if 'category' in df.columns:
             invalid_conditions.append(
                 F.col('category').isNull() | 
-                (F.col('category') == "") |
-                (F.trim(F.col('category')) == "")
+                (F.col('category') == '')
             )
+            
+            invalid_category_count = df.filter(
+                F.col('category').isNull() | (F.col('category') == '')
+            ).count()
+            if invalid_category_count > 0:
+                validation_details['invalid_category_count'] = invalid_category_count
         
-        if not invalid_conditions:
-            return QualityCheck(
-                check_name="Validity Check",
-                check_type="VALIDITY",
-                passed=True,
-                failed_count=0,
-                message="No validity rules to check"
-            )
-        
-        # Combine all conditions
-        combined_condition = invalid_conditions[0]
-        for condition in invalid_conditions[1:]:
-            combined_condition = combined_condition | condition
-        
-        invalid_count = df.filter(combined_condition).count()
+        # Count total invalid records
+        if invalid_conditions:
+            combined_condition = invalid_conditions[0]
+            for condition in invalid_conditions[1:]:
+                combined_condition = combined_condition | condition
+            
+            invalid_count = df.filter(combined_condition).count()
+        else:
+            invalid_count = 0
         
         passed = invalid_count == 0
         message = (
@@ -287,470 +309,416 @@ class DataQualityValidator:
             else f"{invalid_count} records with invalid values"
         )
         
-        return QualityCheck(
+        return QualityCheckResult(
             check_name="Validity Check",
             check_type="VALIDITY",
             passed=passed,
             failed_count=invalid_count,
-            message=message
+            message=message,
+            details=validation_details if validation_details else None
         )
     
-    def check_consistency(self, df: DataFrame) -> QualityCheck:
+    def check_consistency(self, df: DataFrame) -> QualityCheckResult:
         """
-        Check for data consistency (e.g., transformed_value should be >= value)
+        Check for logical consistency between related fields.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to check
             
         Returns:
-            QualityCheck result
+            QualityCheckResult with consistency validation results
         """
-        self.logger.info("Running consistency check")
+        self.logger.info("Performing consistency check")
         
         inconsistent_conditions = []
+        consistency_details = {}
         
-        # Check if transformed_value makes sense relative to value
+        # Check that transformed_value >= value (after transformation)
         if 'value' in df.columns and 'transformed_value' in df.columns:
-            # Transformed value should generally be within reasonable range of original
-            # For example, not more than 10x the original value
+            # Transformed value should typically be >= original value
+            # (depends on business logic, adjust as needed)
             inconsistent_conditions.append(
-                (F.col('transformed_value') > F.col('value') * 10) |
-                (F.col('transformed_value') < F.col('value') * 0.1)
+                F.col('transformed_value') < (F.col('value') * 0.5)
             )
+            
+            inconsistent_transform_count = df.filter(
+                F.col('transformed_value') < (F.col('value') * 0.5)
+            ).count()
+            if inconsistent_transform_count > 0:
+                consistency_details['inconsistent_transformation'] = inconsistent_transform_count
         
-        # Check status consistency with value ranges
+        # Check status consistency with value
         if 'status' in df.columns and 'transformed_value' in df.columns:
-            # HIGH_VALUE status should have high transformed_value
-            inconsistent_conditions.append(
-                (F.col('status') == 'HIGH_VALUE') & (F.col('transformed_value') < 750)
-            )
-            inconsistent_conditions.append(
-                (F.col('status') == 'LOW_VALUE') & (F.col('transformed_value') >= 300)
-            )
+            # High value items should have appropriate status
+            high_value_wrong_status = df.filter(
+                (F.col('transformed_value') >= 1000) & 
+                (F.col('status') == 'LOW_VALUE')
+            ).count()
+            
+            if high_value_wrong_status > 0:
+                consistency_details['status_inconsistency'] = high_value_wrong_status
+                inconsistent_conditions.append(
+                    (F.col('transformed_value') >= 1000) & 
+                    (F.col('status') == 'LOW_VALUE')
+                )
         
-        # Check priority consistency with transformed_value
+        # Check priority consistency with value
         if 'priority' in df.columns and 'transformed_value' in df.columns:
-            # Priority 1 should have high values
-            inconsistent_conditions.append(
-                (F.col('priority') == 1) & (F.col('transformed_value') < 1000)
-            )
+            # High value items should have high priority (1 or 2)
+            priority_inconsistency = df.filter(
+                (F.col('transformed_value') >= 1000) & 
+                (F.col('priority') > 2)
+            ).count()
+            
+            if priority_inconsistency > 0:
+                consistency_details['priority_inconsistency'] = priority_inconsistency
+                inconsistent_conditions.append(
+                    (F.col('transformed_value') >= 1000) & 
+                    (F.col('priority') > 2)
+                )
         
-        if not inconsistent_conditions:
-            return QualityCheck(
-                check_name="Consistency Check",
-                check_type="CONSISTENCY",
-                passed=True,
-                failed_count=0,
-                message="No consistency rules to check"
-            )
-        
-        # Combine all conditions
-        combined_condition = inconsistent_conditions[0]
-        for condition in inconsistent_conditions[1:]:
-            combined_condition = combined_condition | condition
-        
-        inconsistent_count = df.filter(combined_condition).count()
+        # Count total inconsistent records
+        if inconsistent_conditions:
+            combined_condition = inconsistent_conditions[0]
+            for condition in inconsistent_conditions[1:]:
+                combined_condition = combined_condition | condition
+            
+            inconsistent_count = df.filter(combined_condition).count()
+        else:
+            inconsistent_count = 0
         
         passed = inconsistent_count == 0
         message = (
-            "All values are consistent" if passed 
-            else f"{inconsistent_count} records with inconsistent values"
+            "All records are logically consistent" if passed 
+            else f"{inconsistent_count} records with logical inconsistencies"
         )
         
-        return QualityCheck(
+        return QualityCheckResult(
             check_name="Consistency Check",
             check_type="CONSISTENCY",
             passed=passed,
             failed_count=inconsistent_count,
-            message=message
-        )
-    
-    def check_value_ranges(self, df: DataFrame) -> QualityCheck:
-        """
-        Check if values are within expected ranges
-        
-        Args:
-            df: Input DataFrame
-            
-        Returns:
-            QualityCheck result
-        """
-        self.logger.info("Running value range check")
-        
-        out_of_range_conditions = []
-        
-        for field, range_config in self.value_ranges.items():
-            if field in df.columns:
-                min_val = range_config.get('min')
-                max_val = range_config.get('max')
-                
-                if min_val is not None:
-                    out_of_range_conditions.append(F.col(field) < min_val)
-                if max_val is not None:
-                    out_of_range_conditions.append(F.col(field) > max_val)
-        
-        if not out_of_range_conditions:
-            return QualityCheck(
-                check_name="Value Range Check",
-                check_type="VALUE_RANGE",
-                passed=True,
-                failed_count=0,
-                message="No value ranges to check"
-            )
-        
-        combined_condition = out_of_range_conditions[0]
-        for condition in out_of_range_conditions[1:]:
-            combined_condition = combined_condition | condition
-        
-        out_of_range_count = df.filter(combined_condition).count()
-        
-        passed = out_of_range_count == 0
-        message = (
-            "All values within expected ranges" if passed 
-            else f"{out_of_range_count} records with values out of range"
-        )
-        
-        return QualityCheck(
-            check_name="Value Range Check",
-            check_type="VALUE_RANGE",
-            passed=passed,
-            failed_count=out_of_range_count,
-            message=message
-        )
-    
-    def check_category_validity(self, df: DataFrame) -> QualityCheck:
-        """
-        Check if categories are from valid set
-        
-        Args:
-            df: Input DataFrame
-            
-        Returns:
-            QualityCheck result
-        """
-        self.logger.info("Running category validity check")
-        
-        if 'category' not in df.columns:
-            return QualityCheck(
-                check_name="Category Validity Check",
-                check_type="CATEGORY_VALIDITY",
-                passed=True,
-                failed_count=0,
-                message="No category field to check"
-            )
-        
-        invalid_category_count = df.filter(
-            ~F.col('category').isin(self.valid_categories)
-        ).count()
-        
-        # Get examples of invalid categories
-        invalid_categories = []
-        if invalid_category_count > 0:
-            invalid_df = (
-                df.filter(~F.col('category').isin(self.valid_categories))
-                .groupBy('category')
-                .count()
-                .orderBy(F.desc('count'))
-                .limit(10)
-            )
-            invalid_categories = [
-                {'category': row['category'], 'count': row['count']} 
-                for row in invalid_df.collect()
-            ]
-        
-        passed = invalid_category_count == 0
-        message = (
-            "All categories are valid" if passed 
-            else f"{invalid_category_count} records with invalid categories"
-        )
-        
-        return QualityCheck(
-            check_name="Category Validity Check",
-            check_type="CATEGORY_VALIDITY",
-            passed=passed,
-            failed_count=invalid_category_count,
             message=message,
-            details={'invalid_categories': invalid_categories}
+            details=consistency_details if consistency_details else None
         )
     
-    def check_data_freshness(self, df: DataFrame) -> QualityCheck:
+    def check_business_rules(self, df: DataFrame) -> QualityCheckResult:
         """
-        Check if data is fresh (recently processed)
+        Validate custom business rules defined in configuration.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to check
             
         Returns:
-            QualityCheck result
+            QualityCheckResult with business rule validation results
         """
-        self.logger.info("Running data freshness check")
+        self.logger.info("Performing business rules check")
         
-        if 'processed_at' not in df.columns:
-            return QualityCheck(
-                check_name="Data Freshness Check",
-                check_type="FRESHNESS",
-                passed=True,
-                failed_count=0,
-                message="No timestamp field to check"
+        rule_violations = []
+        rule_details = {}
+        
+        # Business Rule 1: Premium category must have value >= 500
+        if 'category' in df.columns and 'value' in df.columns:
+            premium_threshold = self.business_rules.get('premium_min_value', 500)
+            premium_violations = df.filter(
+                (F.col('category') == 'PREMIUM') & 
+                (F.col('value') < premium_threshold)
+            ).count()
+            
+            if premium_violations > 0:
+                rule_violations.append(premium_violations)
+                rule_details['premium_value_violations'] = premium_violations
+        
+        # Business Rule 2: VIP category must have priority 1 or 2
+        if 'category' in df.columns and 'priority' in df.columns:
+            vip_priority_violations = df.filter(
+                (F.col('category') == 'VIP') & 
+                (F.col('priority') > 2)
+            ).count()
+            
+            if vip_priority_violations > 0:
+                rule_violations.append(vip_priority_violations)
+                rule_details['vip_priority_violations'] = vip_priority_violations
+        
+        # Business Rule 3: Name must not contain special characters (beyond basic punctuation)
+        if 'name' in df.columns:
+            invalid_name_pattern = self.business_rules.get(
+                'invalid_name_pattern', 
+                r'[^A-Za-z0-9\s\-_.]'
             )
+            name_violations = df.filter(
+                F.col('name').rlike(invalid_name_pattern)
+            ).count()
+            
+            if name_violations > 0:
+                rule_violations.append(name_violations)
+                rule_details['name_pattern_violations'] = name_violations
         
-        # Check for records older than configured threshold (default 24 hours)
-        freshness_hours = self.config.get('freshness_threshold_hours', 24)
-        threshold = F.current_timestamp() - F.expr(f"INTERVAL {freshness_hours} HOURS")
+        # Business Rule 4: Status must be from allowed list
+        if 'status' in df.columns:
+            allowed_statuses = self.business_rules.get(
+                'allowed_statuses',
+                ['ACTIVE', 'TRANSFORMED', 'HIGH_VALUE', 'MEDIUM_VALUE', 'LOW_VALUE', 'NORMAL']
+            )
+            status_violations = df.filter(
+                ~F.col('status').isin(allowed_statuses)
+            ).count()
+            
+            if status_violations > 0:
+                rule_violations.append(status_violations)
+                rule_details['invalid_status_violations'] = status_violations
         
-        stale_count = df.filter(F.col('processed_at') < threshold).count()
-        
-        passed = stale_count == 0
+        total_violations = sum(rule_violations)
+        passed = total_violations == 0
         message = (
-            f"All data processed within {freshness_hours} hours" if passed 
-            else f"{stale_count} stale records (older than {freshness_hours} hours)"
+            "All business rules satisfied" if passed 
+            else f"{total_violations} business rule violations found"
         )
         
-        return QualityCheck(
-            check_name="Data Freshness Check",
-            check_type="FRESHNESS",
+        return QualityCheckResult(
+            check_name="Business Rules Check",
+            check_type="BUSINESS_RULES",
             passed=passed,
-            failed_count=stale_count,
-            message=message
+            failed_count=total_violations,
+            message=message,
+            details=rule_details if rule_details else None
         )
     
     def profile_data(self, df: DataFrame) -> DataProfile:
         """
-        Generate comprehensive data profile
+        Generate statistical profile of the dataset.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to profile
             
         Returns:
-            DataProfile with statistics
+            DataProfile with statistical summary
         """
         self.logger.info("Generating data profile")
         
-        # Basic counts
         total_records = df.count()
         
-        # Count nulls across all columns
-        null_counts = {}
-        for col_name in df.columns:
-            null_count = df.filter(F.col(col_name).isNull()).count()
-            null_counts[col_name] = null_count
+        # Count nulls across all required fields
+        null_count = df.filter(
+            F.col('id').isNull() | 
+            F.col('name').isNull() | 
+            F.col('value').isNull()
+        ).count() if all(col in df.columns for col in ['id', 'name', 'value']) else 0
         
-        total_null_count = sum(null_counts.values())
-        
-        # Check for duplicates
-        duplicate_count = 0
+        # Count duplicates
         if 'id' in df.columns:
-            total = df.count()
-            unique = df.select('id').distinct().count()
-            duplicate_count = total - unique
+            unique_ids = df.select('id').distinct().count()
+            duplicate_count = total_records - unique_ids
+        else:
+            duplicate_count = 0
         
-        # Statistics on numeric columns
-        stats = {}
-        if 'transformed_value' in df.columns:
-            stats_df = df.select(
-                F.min('transformed_value').alias('min_value'),
-                F.max('transformed_value').alias('max_value'),
-                F.avg('transformed_value').alias('avg_value'),
-                F.stddev('transformed_value').alias('std_dev')
+        # Calculate value statistics
+        if 'value' in df.columns:
+            stats = df.select(
+                F.min('value').alias('min_value'),
+                F.max('value').alias('max_value'),
+                F.avg('value').alias('avg_value'),
+                F.stddev('value').alias('std_deviation')
             ).first()
             
-            min_value = stats_df['min_value'] if stats_df['min_value'] is not None else 0.0
-            max_value = stats_df['max_value'] if stats_df['max_value'] is not None else 0.0
-            avg_value = stats_df['avg_value'] if stats_df['avg_value'] is not None else 0.0
-            std_dev = stats_df['std_dev'] if stats_df['std_dev'] is not None else 0.0
+            min_value = float(stats['min_value']) if stats['min_value'] else 0.0
+            max_value = float(stats['max_value']) if stats['max_value'] else 0.0
+            avg_value = float(stats['avg_value']) if stats['avg_value'] else 0.0
+            std_deviation = float(stats['std_deviation']) if stats['std_deviation'] else 0.0
         else:
-            min_value = max_value = avg_value = std_dev = 0.0
+            min_value = max_value = avg_value = std_deviation = 0.0
         
         # Count unique categories
-        unique_categories = 0
         if 'category' in df.columns:
             unique_categories = df.select('category').distinct().count()
+        else:
+            unique_categories = 0
         
-        # Additional metrics
-        additional_metrics = {
-            'null_counts_by_field': null_counts,
-            'total_columns': len(df.columns),
-            'column_names': df.columns
-        }
-        
-        return DataProfile(
+        profile = DataProfile(
             total_records=total_records,
-            null_count=total_null_count,
+            null_count=null_count,
             duplicate_count=duplicate_count,
-            min_value=float(min_value),
-            max_value=float(max_value),
-            avg_value=float(avg_value),
-            std_deviation=float(std_dev),
-            unique_categories=unique_categories,
-            additional_metrics=additional_metrics
+            min_value=min_value,
+            max_value=max_value,
+            avg_value=avg_value,
+            std_deviation=std_deviation,
+            unique_categories=unique_categories
         )
+        
+        self.logger.info(f"Data profile generated: {profile}")
+        return profile
     
     def detect_anomalies(self, df: DataFrame) -> List[str]:
         """
-        Detect anomalies in the data using statistical methods
+        Detect statistical anomalies in the dataset.
         
         Args:
-            df: Input DataFrame
+            df: DataFrame to analyze
             
         Returns:
             List of anomaly descriptions
         """
-        self.logger.info("Detecting data anomalies")
+        self.logger.info("Detecting anomalies")
         
         anomalies = []
         
-        if 'transformed_value' not in df.columns:
-            return anomalies
-        
-        # Calculate statistics
-        stats = df.select(
-            F.avg('transformed_value').alias('mean'),
-            F.stddev('transformed_value').alias('stddev')
-        ).first()
-        
-        mean = stats['mean']
-        stddev = stats['stddev']
-        
-        if mean is None or stddev is None:
-            return anomalies
-        
-        # Find outliers (values beyond 3 standard deviations)
-        outlier_threshold = self.config.get('outlier_std_devs', 3)
-        lower_bound = mean - (outlier_threshold * stddev)
-        upper_bound = mean + (outlier_threshold * stddev)
-        
-        outlier_count = df.filter(
-            (F.col('transformed_value') < lower_bound) | 
-            (F.col('transformed_value') > upper_bound)
-        ).count()
-        
-        if outlier_count > 0:
-            anomalies.append(
-                f"Found {outlier_count} outliers beyond {outlier_threshold} standard deviations "
-                f"(mean={mean:.2f}, stddev={stddev:.2f})"
-            )
-        
-        # Check for sudden spike in record count
-        if 'processed_at' in df.columns:
-            # Group by hour and count
-            hourly_counts = df.groupBy(
-                F.date_trunc('hour', 'processed_at').alias('hour')
-            ).count()
-            
-            hourly_stats = hourly_counts.select(
-                F.avg('count').alias('avg_count'),
-                F.stddev('count').alias('stddev_count')
-            ).first()
-            
-            if hourly_stats['avg_count'] is not None and hourly_stats['stddev_count'] is not None:
-                spike_threshold = hourly_stats['avg_count'] + (3 * hourly_stats['stddev_count'])
+        # Detect outliers in value field using IQR method
+        if 'value' in df.columns:
+            quartiles = df.approxQuantile('value', [0.25, 0.75], 0.05)
+            if len(quartiles) == 2:
+                q1, q3 = quartiles
+                iqr = q3 - q1
+                lower_bound = q1 - (1.5 * iqr)
+                upper_bound = q3 + (1.5 * iqr)
                 
-                spike_count = hourly_counts.filter(
-                    F.col('count') > spike_threshold
+                outlier_count = df.filter(
+                    (F.col('value') < lower_bound) | 
+                    (F.col('value') > upper_bound)
                 ).count()
                 
-                if spike_count > 0:
+                if outlier_count > 0:
                     anomalies.append(
-                        f"Found {spike_count} hours with unusually high record counts"
+                        f"Found {outlier_count} outlier values "
+                        f"(outside range [{lower_bound:.2f}, {upper_bound:.2f}])"
                     )
         
-        # Check for suspicious patterns in categories
+        # Detect skewed category distribution
         if 'category' in df.columns:
-            category_dist = df.groupBy('category').count()
+            category_counts = df.groupBy('category').count()
             total = df.count()
             
-            for row in category_dist.collect():
-                percentage = (row['count'] / total) * 100
-                
-                # Flag if any category has more than 80% or less than 1%
-                if percentage > 80:
+            skewed_categories = category_counts.filter(
+                (F.col('count') / total) > 0.5
+            ).collect()
+            
+            if skewed_categories:
+                for row in skewed_categories:
+                    percentage = (row['count'] / total) * 100
                     anomalies.append(
-                        f"Category '{row['category']}' dominates with {percentage:.1f}% of records"
+                        f"Category '{row['category']}' represents {percentage:.1f}% "
+                        f"of data (potential skew)"
                     )
-                elif percentage < 1 and row['count'] > 10:
-                    anomalies.append(
-                        f"Category '{row['category']}' has unusually low representation: {percentage:.2f}%"
-                    )
+        
+        # Detect unusual priority distribution
+        if 'priority' in df.columns:
+            priority_dist = df.groupBy('priority').count().collect()
+            if len(priority_dist) == 1:
+                anomalies.append(
+                    f"All records have the same priority value "
+                    f"({priority_dist[0]['priority']})"
+                )
+        
+        # Detect missing timestamps
+        if 'processed_at' in df.columns:
+            null_timestamps = df.filter(F.col('processed_at').isNull()).count()
+            if null_timestamps > 0:
+                anomalies.append(f"Found {null_timestamps} records with null timestamps")
         
         self.logger.info(f"Detected {len(anomalies)} anomalies")
         return anomalies
     
-    def generate_quality_report(self, df: DataFrame) -> Dict:
+    def get_failed_records(self, df: DataFrame, check_type: str) -> DataFrame:
         """
-        Generate comprehensive quality report
+        Get records that failed specific quality check.
         
         Args:
-            df: Input DataFrame
+            df: Original DataFrame
+            check_type: Type of check to filter failures
             
         Returns:
-            Dictionary containing all quality metrics
+            DataFrame containing only failed records
         """
-        self.logger.info("Generating comprehensive quality report")
+        if check_type == "COMPLETENESS":
+            required_fields = self.required_fields or ['id', 'name', 'value']
+            condition = None
+            for field in required_fields:
+                if field in df.columns:
+                    field_condition = (
+                        F.col(field).isNull() | 
+                        (F.col(field) == '')
+                    )
+                    condition = field_condition if condition is None else (condition | field_condition)
+            return df.filter(condition) if condition else df.limit(0)
         
-        checks = self.perform_quality_checks(df)
-        profile = self.profile_data(df)
-        anomalies = self.detect_anomalies(df)
+        elif check_type == "UNIQUENESS":
+            unique_keys = self.unique_keys or ['id']
+            existing_keys = [key for key in unique_keys if key in df.columns]
+            if existing_keys:
+                return (df.groupBy(existing_keys)
+                       .count()
+                       .filter(F.col('count') > 1))
+            return df.limit(0)
         
-        # Calculate overall quality score
-        passed_checks = sum(1 for check in checks if check.passed)
-        total_checks = len(checks)
-        quality_score = (passed_checks / total_checks * 100) if total_checks > 0 else 0
+        elif check_type == "VALIDITY":
+            invalid_conditions = []
+            if 'value' in df.columns:
+                invalid_conditions.append(F.col('value') < 0)
+            if 'priority' in df.columns:
+                invalid_conditions.append(
+                    (F.col('priority') < 1) | (F.col('priority') > 5)
+                )
+            
+            if invalid_conditions:
+                combined = invalid_conditions[0]
+                for cond in invalid_conditions[1:]:
+                    combined = combined | cond
+                return df.filter(combined)
+            return df.limit(0)
         
-        report = {
-            'run_id': self.run_id,
-            'timestamp': datetime.now().isoformat(),
-            'quality_score': quality_score,
-            'checks': [
-                {
-                    'check_name': check.check_name,
-                    'check_type': check.check_type,
-                    'passed': check.passed,
-                    'failed_count': check.failed_count,
-                    'message': check.message,
-                    'details': check.details
-                }
-                for check in checks
-            ],
-            'profile': {
-                'total_records': profile.total_records,
-                'null_count': profile.null_count,
-                'duplicate_count': profile.duplicate_count,
-                'min_value': profile.min_value,
-                'max_value': profile.max_value,
-                'avg_value': profile.avg_value,
-                'std_deviation': profile.std_deviation,
-                'unique_categories': profile.unique_categories,
-                'additional_metrics': profile.additional_metrics
-            },
-            'anomalies': anomalies,
-            'summary': {
-                'total_checks': total_checks,
-                'passed_checks': passed_checks,
-                'failed_checks': total_checks - passed_checks,
-                'has_anomalies': len(anomalies) > 0
-            }
-        }
-        
-        return report
+        else:
+            return df.limit(0)
 
 
-def create_validator(spark: SparkSession, run_id: str, config_path: str = None) -> DataQualityValidator:
+def create_quality_report(
+    results: List[QualityCheckResult], 
+    profile: DataProfile,
+    anomalies: List[str]
+) -> Dict:
     """
-    Factory function to create DataQualityValidator instance
+    Create comprehensive quality report from check results.
     
     Args:
-        spark: SparkSession instance
-        run_id: Unique run identifier
-        config_path: Optional path to config file
+        results: List of quality check results
+        profile: Data profile statistics
+        anomalies: List of detected anomalies
         
     Returns:
-        DataQualityValidator instance
+        Dictionary containing formatted quality report
     """
-    if config_path:
-        import yaml
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f).get('data_quality', {})
-    else:
-        config = {}
+    total_checks = len(results)
+    passed_checks = sum(1 for r in results if r.passed)
+    failed_checks = total_checks - passed_checks
     
-    return DataQualityValidator(spark, run_id, config)
+    report = {
+        'summary': {
+            'total_checks': total_checks,
+            'passed': passed_checks,
+            'failed': failed_checks,
+            'pass_rate': (passed_checks / total_checks * 100) if total_checks > 0 else 0
+        },
+        'checks': [
+            {
+                'name': r.check_name,
+                'type': r.check_type,
+                'passed': r.passed,
+                'failed_count': r.failed_count,
+                'message': r.message,
+                'details': r.details
+            }
+            for r in results
+        ],
+        'profile': {
+            'total_records': profile.total_records,
+            'null_count': profile.null_count,
+            'duplicate_count': profile.duplicate_count,
+            'min_value': profile.min_value,
+            'max_value': profile.max_value,
+            'avg_value': profile.avg_value,
+            'std_deviation': profile.std_deviation,
+            'unique_categories': profile.unique_categories
+        },
+        'anomalies': anomalies,
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    return report
