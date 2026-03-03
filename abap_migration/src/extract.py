@@ -1,38 +1,42 @@
 """
-PySpark ETL Extractor Module
-Migrated from zcl_etl_extractor.abap
+PySpark Data Extractor with Delta Lake Integration
+Converts ABAP extractor logic to PySpark DataFrame operations
 """
 
 from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, DecimalType, TimestampType
-from typing import Optional
-import logging
+from delta import DeltaTable
 from datetime import datetime
+from typing import Optional, Dict, Any
+import logging
+from src.logger import ETLLogger
 
 
-class ETLExtractor:
-    """Extract data from various sources for ETL processing."""
+class DataExtractor:
+    """Extracts data from various sources using PySpark DataFrame API"""
     
-    def __init__(self, source_type: str = "DATABASE", run_id: str = None, spark: SparkSession = None):
+    def __init__(self, spark: SparkSession, source_type: str = "DATABASE", run_id: str = None):
         """
-        Initialize ETL Extractor.
+        Initialize extractor with spark session and configuration
         
         Args:
-            source_type: Type of data source (DATABASE, STAGING, INCREMENTAL)
+            spark: Active SparkSession
+            source_type: Type of source (DATABASE, STAGING, INCREMENTAL)
             run_id: Unique run identifier
-            spark: SparkSession instance
         """
-        self.source_type = source_type
+        self.spark = spark
+        self.source_type = source_type.upper()
         self.run_id = run_id or self._generate_run_id()
-        self.spark = spark or SparkSession.builder.getOrCreate()
-        self.logger = logging.getLogger(__name__)
+        self.logger = ETLLogger.get_instance()
         
     def _generate_run_id(self) -> str:
-        """Generate a unique run ID."""
+        """Generate unique run ID"""
         return f"RUN_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    def get_source_schema(self) -> StructType:
-        """Define the schema for source data."""
+    @staticmethod
+    def get_source_schema() -> StructType:
+        """Define schema for source data"""
         return StructType([
             StructField("id", StringType(), False),
             StructField("name", StringType(), True),
@@ -46,20 +50,28 @@ class ETLExtractor:
             StructField("changed_by", StringType(), True),
         ])
     
-    def extract_data(self, filter_condition: Optional[str] = None, max_records: int = 0) -> DataFrame:
+    def extract_data(
+        self, 
+        filter_condition: Optional[str] = None,
+        max_records: int = 0
+    ) -> DataFrame:
         """
-        Extract data based on source type.
+        Main extraction method - orchestrates extraction based on source type
         
         Args:
-            filter_condition: SQL filter condition
-            max_records: Maximum number of records to extract (0 = no limit)
+            filter_condition: Filter expression for DataFrame.filter()
+            max_records: Maximum number of records to extract (0 = unlimited)
             
         Returns:
             DataFrame with extracted data
         """
-        self.logger.info(f"Starting extraction - Source: {self.source_type}, Run ID: {self.run_id}")
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Starting extraction - Source: {self.source_type}, Run ID: {self.run_id}"
+        )
         
         try:
+            # Route to appropriate extraction method
             if self.source_type == "DATABASE":
                 df = self.extract_from_database(filter_condition)
             elif self.source_type == "STAGING":
@@ -69,126 +81,211 @@ class ETLExtractor:
                 if last_run_time:
                     df = self.extract_incremental(last_run_time)
                 else:
+                    self.logger.log_warning(
+                        component="EXTRACTOR",
+                        message="No previous successful run found, performing full extract"
+                    )
                     df = self.extract_from_database(filter_condition)
             else:
                 df = self.extract_from_database(filter_condition)
             
-            # Apply max records limit if specified
+            # Apply record limit if specified (replaces DELETE ... FROM logic)
             if max_records > 0:
                 df = df.limit(max_records)
             
             record_count = df.count()
-            self.logger.info(f"Extracted {record_count} records")
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Extracted {record_count} records"
+            )
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Extraction failed: {str(e)}")
+            self.logger.log_error(
+                component="EXTRACTOR",
+                message="Extraction failed",
+                details=str(e)
+            )
             raise
     
     def extract_from_database(self, filter_condition: Optional[str] = None) -> DataFrame:
         """
-        Extract from source database table.
+        Extract from database source using DataFrame API
+        Replaces: SELECT * FROM zetl_source_data WHERE ...
         
         Args:
-            filter_condition: SQL WHERE clause condition
+            filter_condition: Column expression for filtering (e.g., "status = 'ACTIVE'")
             
         Returns:
-            DataFrame with source data
+            DataFrame with filtered data
         """
-        from pyspark.sql import functions as F
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message="Extracting from database source"
+        )
         
-        # Read from source table (adjust path/connection as needed)
+        # Read from Delta Lake table (or other sources)
+        source_table = self.spark.conf.get("spark.etl.source_table", "etl_source_data")
+        
         df = self.spark.read \
-            .format("jdbc") \
-            .option("url", self._get_jdbc_url()) \
-            .option("dbtable", "zetl_source_data") \
-            .option("driver", self._get_jdbc_driver()) \
-            .schema(self.get_source_schema()) \
-            .load()
+            .format("delta") \
+            .load(source_table)
         
-        # Apply filter if provided
+        # Apply filter using DataFrame.filter() instead of SQL WHERE
         if filter_condition:
             df = df.filter(filter_condition)
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Applied filter: {filter_condition}"
+            )
         
         return df
     
     def extract_from_staging(self, run_id: str) -> DataFrame:
         """
-        Extract from staging table.
+        Extract from staging area
+        Replaces: SELECT * FROM zetl_staging WHERE run_id = @iv_run_id AND status = 'READY'
         
         Args:
-            run_id: Run identifier for staged data
+            run_id: Run identifier to filter staging data
             
         Returns:
             DataFrame with staged data
         """
-        staging_schema = StructType([
-            StructField("id", StringType(), False),
-            StructField("run_id", StringType(), True),
-            StructField("status", StringType(), True),
-            StructField("raw_data", StringType(), True),
-        ])
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Extracting from staging - Run ID: {run_id}"
+        )
+        
+        staging_table = self.spark.conf.get("spark.etl.staging_table", "etl_staging")
         
         df = self.spark.read \
-            .format("jdbc") \
-            .option("url", self._get_jdbc_url()) \
-            .option("dbtable", "zetl_staging") \
-            .option("driver", self._get_jdbc_driver()) \
-            .schema(staging_schema) \
-            .load() \
-            .filter(f"run_id = '{run_id}' AND status = 'READY'")
+            .format("delta") \
+            .load(staging_table) \
+            .filter((F.col("run_id") == run_id) & (F.col("status") == "READY"))
+        
+        # Parse raw_data if stored as JSON/string
+        if "raw_data" in df.columns:
+            df = df.withColumn("parsed_data", F.from_json(F.col("raw_data"), self.get_source_schema()))
+            df = df.select("parsed_data.*")
         
         return df
     
     def extract_incremental(self, last_run_time: datetime) -> DataFrame:
         """
-        Extract only changed records since last run.
+        Extract incremental data using Delta Lake time travel
+        Replaces: SELECT * FROM zetl_source_data WHERE changed_at > @iv_last_run_time
         
         Args:
             last_run_time: Timestamp of last successful run
             
         Returns:
-            DataFrame with incremental data
+            DataFrame with changed records since last run
         """
-        from pyspark.sql import functions as F
+        self.logger.log_info(
+            component="EXTRACTOR",
+            message=f"Extracting incremental data since {last_run_time}"
+        )
         
+        source_table = self.spark.conf.get("spark.etl.source_table", "etl_source_data")
+        
+        # Option 1: Filter by changed_at timestamp
         df = self.spark.read \
-            .format("jdbc") \
-            .option("url", self._get_jdbc_url()) \
-            .option("dbtable", "zetl_source_data") \
-            .option("driver", self._get_jdbc_driver()) \
-            .schema(self.get_source_schema()) \
-            .load() \
+            .format("delta") \
+            .load(source_table) \
             .filter(F.col("changed_at") > F.lit(last_run_time))
+        
+        # Option 2: Use Delta Lake time travel (if available)
+        # deltaTable = DeltaTable.forPath(self.spark, source_table)
+        # df = deltaTable.toDF().filter(F.col("changed_at") > F.lit(last_run_time))
+        
+        return df
+    
+    def extract_with_watermark(self, watermark_column: str = "changed_at", delay: str = "1 hour") -> DataFrame:
+        """
+        Extract using Spark Structured Streaming watermarking
+        For real-time/streaming scenarios
+        
+        Args:
+            watermark_column: Column to use for watermarking
+            delay: Watermark delay threshold
+            
+        Returns:
+            Streaming DataFrame with watermark applied
+        """
+        source_table = self.spark.conf.get("spark.etl.source_table", "etl_source_data")
+        
+        df = self.spark.readStream \
+            .format("delta") \
+            .load(source_table) \
+            .withWatermark(watermark_column, delay)
+        
+        return df
+    
+    def extract_using_delta_time_travel(self, version: Optional[int] = None, timestamp: Optional[str] = None) -> DataFrame:
+        """
+        Extract specific version using Delta Lake time travel
+        
+        Args:
+            version: Specific version number
+            timestamp: Timestamp string (e.g., "2024-01-01 00:00:00")
+            
+        Returns:
+            DataFrame at specified version/timestamp
+        """
+        source_table = self.spark.conf.get("spark.etl.source_table", "etl_source_data")
+        
+        if version is not None:
+            df = self.spark.read \
+                .format("delta") \
+                .option("versionAsOf", version) \
+                .load(source_table)
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Extracted data from version {version}"
+            )
+        elif timestamp is not None:
+            df = self.spark.read \
+                .format("delta") \
+                .option("timestampAsOf", timestamp) \
+                .load(source_table)
+            self.logger.log_info(
+                component="EXTRACTOR",
+                message=f"Extracted data from timestamp {timestamp}"
+            )
+        else:
+            df = self.spark.read.format("delta").load(source_table)
         
         return df
     
     def _get_last_successful_run_time(self) -> Optional[datetime]:
-        """Get timestamp of last successful ETL run."""
+        """
+        Get timestamp of last successful ETL run
+        Replaces: SELECT SINGLE end_time FROM zetl_run_log WHERE status = 'SUCCESS'
+        
+        Returns:
+            Timestamp of last successful run or None
+        """
         try:
-            run_log_df = self.spark.read \
-                .format("jdbc") \
-                .option("url", self._get_jdbc_url()) \
-                .option("dbtable", "zetl_run_log") \
-                .option("driver", self._get_jdbc_driver()) \
-                .load() \
-                .filter("status = 'SUCCESS'") \
-                .orderBy("end_time", ascending=False) \
-                .limit(1)
+            run_log_table = self.spark.conf.get("spark.etl.run_log_table", "etl_run_log")
             
-            if run_log_df.count() > 0:
-                return run_log_df.select("end_time").first()[0]
-            return None
+            df = self.spark.read \
+                .format("delta") \
+                .load(run_log_table) \
+                .filter(F.col("status") == "SUCCESS") \
+                .orderBy(F.col("end_time").desc()) \
+                .limit(1) \
+                .select("end_time")
+            
+            if df.count() > 0:
+                return df.first()["end_time"]
+            else:
+                return None
+                
         except Exception as e:
-            self.logger.warning(f"Could not retrieve last run time: {str(e)}")
+            self.logger.log_warning(
+                component="EXTRACTOR",
+                message=f"Could not retrieve last run time: {str(e)}"
+            )
             return None
-    
-    def _get_jdbc_url(self) -> str:
-        """Get JDBC connection URL from config."""
-        # This should come from config - placeholder for now
-        return "jdbc:postgresql://localhost:5432/etl_db"
-    
-    def _get_jdbc_driver(self) -> str:
-        """Get JDBC driver class name."""
-        return "org.postgresql.Driver"
