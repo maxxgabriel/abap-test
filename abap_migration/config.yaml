@@ -1,85 +1,46 @@
-# ETL Data Initialization Configuration
+# ETL Logger Configuration
 
-data_init:
-  # Number of source records to generate
-  num_source_records: 100
-  
-  # Category definitions
-  categories:
-    - PREMIUM
-    - STANDARD
-    - BASIC
-    - VIP
-    - TRIAL
-  
-  # Value range for random generation
-  value_range:
-    min: 50
-    max: 1000
-  
-  # Output configuration
-  output_format: parquet  # parquet, csv, json
-  output_paths:
-    source_data: data/source
-    config_data: data/config
-    schedule_data: data/schedule
-  
-  # Data quality settings
-  enable_validation: true
-  enable_profiling: true
-
-# Logging configuration
 logging:
   level: INFO  # DEBUG, INFO, WARNING, ERROR
-  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-  file: logs/data_init.log
-
-# Spark configuration
-spark:
-  app_name: ETL_Data_Initialization
-  master: local[*]
-  configs:
-    spark.sql.shuffle.partitions: 4
-    spark.sql.adaptive.enabled: true
-    spark.sql.adaptive.coalescePartitions.enabled: true
-    spark.driver.memory: 2g
-    spark.executor.memory: 2g
-
-# Database configuration (if using JDBC)
-database:
-  enabled: false
-  driver: org.postgresql.Driver
-  url: jdbc:postgresql://localhost:5432/etl_db
-  user: etl_user
-  password: ${DB_PASSWORD}  # Use environment variable
-  tables:
-    source: etl_source_data
-    config: etl_config
-    schedule: etl_schedule
-
-# Performance settings
-performance:
-  batch_size: 1000
-  parallel_tasks: 4
-  checkpoint_interval: 100
+  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
   
-# Business rules
-business_rules:
-  multipliers:
-    PREMIUM: 1.5
-    STANDARD: 1.2
-    BASIC: 1.0
-    VIP: 2.0
-    TRIAL: 0.8
+  # In-memory storage settings
+  max_log_entries: 10000  # Maximum number of logs to keep in memory
+  auto_clear: false  # Automatically clear logs after export
   
-  thresholds:
-    high_value: 750
-    medium_value: 300
-    low_value: 0
+  # Export settings
+  export_format: json  # json or csv
+  export_path: /tmp/etl_logs  # Path for log exports
   
-  priorities:
-    PREMIUM: 1
-    VIP: 1
-    STANDARD: 2
-    BASIC: 3
-    TRIAL: 4
+  # Component-specific settings
+  components:
+    EXTRACTOR:
+      level: INFO
+      enabled: true
+    TRANSFORMER:
+      level: INFO
+      enabled: true
+    LOADER:
+      level: INFO
+      enabled: true
+    ORCHESTRATOR:
+      level: INFO
+      enabled: true
+    DATA_QUALITY:
+      level: WARNING
+      enabled: true
+    MONITOR:
+      level: INFO
+      enabled: true
+
+  # Log retention
+  retention:
+    enabled: true
+    days: 90
+
+  # Alert thresholds
+  alerts:
+    error_threshold: 10  # Alert after N errors
+    warning_threshold: 50  # Alert after N warnings
+    enabled: true
