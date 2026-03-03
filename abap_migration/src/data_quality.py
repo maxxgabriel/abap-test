@@ -1,263 +1,254 @@
-"""
-Data quality module providing comprehensive quality checks.
-"""
+"""Data quality management module."""
 
-from typing import List, Dict
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, count, countDistinct, avg, stddev, min as spark_min, max as spark_max
+from pyspark.sql.functions import col, count, when, stddev, avg, min as spark_min, max as spark_max
+from typing import List, Dict
 import logging
 
-logger = logging.getLogger(__name__)
 
-
-class QualityCheck:
-    """Represents a single quality check result."""
+class DataQuality:
+    """Perform data quality checks and profiling."""
     
-    def __init__(self, name: str, check_type: str, passed: bool, 
-                 failed_count: int, message: str):
-        self.name = name
-        self.check_type = check_type
-        self.passed = passed
-        self.failed_count = failed_count
-        self.message = message
-
-
-class DataProfile:
-    """Statistical profile of dataset."""
-    
-    def __init__(self):
-        self.total_records = 0
-        self.null_count = 0
-        self.duplicate_count = 0
-        self.min_value = 0.0
-        self.max_value = 0.0
-        self.avg_value = 0.0
-        self.std_deviation = 0.0
-        self.unique_categories = 0
-
-
-class DataQualityChecker:
-    """Performs comprehensive data quality checks."""
-    
-    def __init__(self, run_id: str, config: dict):
-        """
-        Initialize quality checker.
+    def __init__(self, spark, config: dict, run_id: str):
+        """Initialize data quality manager.
         
         Args:
-            run_id: Unique run identifier
+            spark: SparkSession instance
             config: Configuration dictionary
+            run_id: Unique run identifier
         """
-        self.run_id = run_id
+        self.spark = spark
         self.config = config
-        logger.info(f"Data quality checker initialized - Run ID: {run_id}")
+        self.run_id = run_id
+        self.logger = logging.getLogger(__name__)
     
-    def perform_quality_checks(self, df: DataFrame) -> List[QualityCheck]:
-        """
-        Perform all quality checks.
+    def perform_quality_checks(self, df: DataFrame) -> List[Dict]:
+        """Run all quality checks.
         
         Args:
             df: DataFrame to check
             
         Returns:
-            List of QualityCheck results
+            List of check results
         """
-        logger.info("Starting data quality checks")
+        self.logger.info("Starting data quality checks")
         
         checks = [
-            self._check_completeness(df),
-            self._check_uniqueness(df),
-            self._check_validity(df),
-            self._check_consistency(df)
+            self.check_completeness(df),
+            self.check_uniqueness(df),
+            self.check_validity(df),
+            self.check_consistency(df)
         ]
         
-        passed = sum(1 for c in checks if c.passed)
+        passed = sum(1 for c in checks if c["passed"])
         failed = len(checks) - passed
         
-        logger.info(f"Quality checks complete: {passed} passed, {failed} failed")
+        self.logger.info(
+            f"Quality checks complete: {passed} passed, {failed} failed"
+        )
         
         return checks
     
-    def _check_completeness(self, df: DataFrame) -> QualityCheck:
-        """Check for null/empty values in critical fields."""
-        logger.info("Running completeness check")
+    def check_completeness(self, df: DataFrame) -> Dict:
+        """Check for missing required values.
         
+        Args:
+            df: DataFrame to check
+            
+        Returns:
+            Check result dictionary
+        """
         null_count = df.filter(
-            col("id").isNull() | 
-            col("name").isNull() | 
-            (col("name") == "") |
-            col("value").isNull()
+            col("id").isNull() | col("name").isNull() | col("value").isNull()
         ).count()
         
         passed = null_count == 0
-        message = ("All required fields are complete" if passed 
-                  else f"{null_count} records with incomplete data")
         
-        return QualityCheck(
-            name="Completeness Check",
-            check_type="COMPLETENESS",
-            passed=passed,
-            failed_count=null_count,
-            message=message
-        )
+        return {
+            "check_name": "Completeness Check",
+            "check_type": "COMPLETENESS",
+            "passed": passed,
+            "failed_count": null_count,
+            "message": (
+                "All required fields are complete"
+                if passed
+                else f"{null_count} records with incomplete data"
+            )
+        }
     
-    def _check_uniqueness(self, df: DataFrame) -> QualityCheck:
-        """Check for duplicate IDs."""
-        logger.info("Running uniqueness check")
+    def check_uniqueness(self, df: DataFrame) -> Dict:
+        """Check for duplicate IDs.
         
+        Args:
+            df: DataFrame to check
+            
+        Returns:
+            Check result dictionary
+        """
         total_count = df.count()
         unique_count = df.select("id").distinct().count()
         duplicate_count = total_count - unique_count
         
         passed = duplicate_count == 0
-        message = ("All IDs are unique" if passed 
-                  else f"{duplicate_count} duplicate IDs found")
         
-        return QualityCheck(
-            name="Uniqueness Check",
-            check_type="UNIQUENESS",
-            passed=passed,
-            failed_count=duplicate_count,
-            message=message
-        )
+        return {
+            "check_name": "Uniqueness Check",
+            "check_type": "UNIQUENESS",
+            "passed": passed,
+            "failed_count": duplicate_count,
+            "message": (
+                "All IDs are unique"
+                if passed
+                else f"{duplicate_count} duplicate IDs found"
+            )
+        }
     
-    def _check_validity(self, df: DataFrame) -> QualityCheck:
-        """Check for invalid values."""
-        logger.info("Running validity check")
-        
-        invalid_count = df.filter(
-            (col("value") < 0) | 
-            (col("transformed_value") < 0) |
-            (col("priority") < 1) | 
-            (col("priority") > 5) |
-            col("category").isNull() |
-            (col("category") == "")
-        ).count()
-        
-        passed = invalid_count == 0
-        message = ("All values are valid" if passed 
-                  else f"{invalid_count} records with invalid values")
-        
-        return QualityCheck(
-            name="Validity Check",
-            check_type="VALIDITY",
-            passed=passed,
-            failed_count=invalid_count,
-            message=message
-        )
-    
-    def _check_consistency(self, df: DataFrame) -> QualityCheck:
-        """Check data consistency rules."""
-        logger.info("Running consistency check")
-        
-        # Check if transformed_value is derived correctly from value
-        inconsistent_count = df.filter(
-            (col("transformed_value") < col("value") * 0.5) |
-            (col("transformed_value") > col("value") * 3.0)
-        ).count()
-        
-        passed = inconsistent_count == 0
-        message = ("Data is consistent" if passed 
-                  else f"{inconsistent_count} records with inconsistent values")
-        
-        return QualityCheck(
-            name="Consistency Check",
-            check_type="CONSISTENCY",
-            passed=passed,
-            failed_count=inconsistent_count,
-            message=message
-        )
-    
-    def profile_data(self, df: DataFrame) -> DataProfile:
-        """
-        Generate statistical profile of data.
-        
-        Args:
-            df: DataFrame to profile
-            
-        Returns:
-            DataProfile with statistics
-        """
-        logger.info("Profiling data")
-        
-        profile = DataProfile()
-        
-        # Basic counts
-        profile.total_records = df.count()
-        profile.null_count = df.filter(col("value").isNull()).count()
-        
-        # Duplicate count
-        total = df.count()
-        unique = df.select("id").distinct().count()
-        profile.duplicate_count = total - unique
-        
-        # Value statistics
-        stats = df.agg(
-            spark_min("transformed_value").alias("min_val"),
-            spark_max("transformed_value").alias("max_val"),
-            avg("transformed_value").alias("avg_val"),
-            stddev("transformed_value").alias("std_val")
-        ).first()
-        
-        if stats:
-            profile.min_value = float(stats.min_val or 0)
-            profile.max_value = float(stats.max_val or 0)
-            profile.avg_value = float(stats.avg_val or 0)
-            profile.std_deviation = float(stats.std_val or 0)
-        
-        # Category count
-        profile.unique_categories = df.select("category").distinct().count()
-        
-        logger.info(f"Profile complete - {profile.total_records} records analyzed")
-        
-        return profile
-    
-    def detect_anomalies(self, df: DataFrame) -> List[str]:
-        """
-        Detect anomalies in data.
+    def check_validity(self, df: DataFrame) -> Dict:
+        """Check for invalid values.
         
         Args:
             df: DataFrame to check
             
         Returns:
-            List of anomaly descriptions
+            Check result dictionary
         """
-        logger.info("Detecting anomalies")
+        invalid_count = df.filter(
+            (col("value") < 0) |
+            (col("transformed_value") < 0) |
+            (col("priority") < 1) |
+            (col("priority") > 5) |
+            col("category").isNull()
+        ).count()
         
-        anomalies = []
+        passed = invalid_count == 0
         
-        # Get statistics
+        return {
+            "check_name": "Validity Check",
+            "check_type": "VALIDITY",
+            "passed": passed,
+            "failed_count": invalid_count,
+            "message": (
+                "All values are valid"
+                if passed
+                else f"{invalid_count} records with invalid values"
+            )
+        }
+    
+    def check_consistency(self, df: DataFrame) -> Dict:
+        """Check for data consistency issues.
+        
+        Args:
+            df: DataFrame to check
+            
+        Returns:
+            Check result dictionary
+        """
+        # Check if transformed_value >= value (with multipliers applied)
+        inconsistent_count = df.filter(
+            (col("category") == "PREMIUM") &
+            (col("transformed_value") < col("value"))
+        ).count()
+        
+        passed = inconsistent_count == 0
+        
+        return {
+            "check_name": "Consistency Check",
+            "check_type": "CONSISTENCY",
+            "passed": passed,
+            "failed_count": inconsistent_count,
+            "message": (
+                "Data is consistent"
+                if passed
+                else f"{inconsistent_count} records with consistency issues"
+            )
+        }
+    
+    def profile_data(self, df: DataFrame) -> Dict:
+        """Generate data profile statistics.
+        
+        Args:
+            df: DataFrame to profile
+            
+        Returns:
+            Profile statistics dictionary
+        """
+        total_records = df.count()
+        
+        # Aggregate statistics
         stats = df.agg(
-            avg("transformed_value").alias("avg"),
-            stddev("transformed_value").alias("std")
+            count(when(col("value").isNull(), 1)).alias("null_count"),
+            spark_min("value").alias("min_value"),
+            spark_max("value").alias("max_value"),
+            avg("value").alias("avg_value"),
+            stddev("value").alias("std_deviation")
         ).first()
         
-        if stats and stats.avg and stats.std:
-            avg_val = float(stats.avg)
-            std_val = float(stats.std)
+        # Count unique categories
+        unique_categories = df.select("category").distinct().count()
+        
+        # Calculate duplicates
+        duplicate_count = total_records - df.select("id").distinct().count()
+        
+        profile = {
+            "total_records": total_records,
+            "null_count": stats["null_count"],
+            "duplicate_count": duplicate_count,
+            "min_value": float(stats["min_value"]) if stats["min_value"] else 0.0,
+            "max_value": float(stats["max_value"]) if stats["max_value"] else 0.0,
+            "avg_value": float(stats["avg_value"]) if stats["avg_value"] else 0.0,
+            "std_deviation": float(stats["std_deviation"]) if stats["std_deviation"] else 0.0,
+            "unique_categories": unique_categories
+        }
+        
+        self.logger.info(f"Data profile: {profile}")
+        
+        return profile
+    
+    def detect_anomalies(self, df: DataFrame) -> List[str]:
+        """Detect anomalies in data.
+        
+        Args:
+            df: DataFrame to analyze
             
-            # Outliers beyond 3 standard deviations
-            outlier_threshold = avg_val + (3 * std_val)
+        Returns:
+            List of anomaly descriptions
+        """
+        anomalies = []
+        
+        # Calculate mean and stddev
+        stats = df.agg(
+            avg("value").alias("mean"),
+            stddev("value").alias("stddev")
+        ).first()
+        
+        mean_val = stats["mean"]
+        stddev_val = stats["stddev"]
+        
+        if mean_val and stddev_val:
+            # Find outliers (> 3 standard deviations)
             outlier_count = df.filter(
-                col("transformed_value") > outlier_threshold
+                (col("value") > mean_val + 3 * stddev_val) |
+                (col("value") < mean_val - 3 * stddev_val)
             ).count()
             
             if outlier_count > 0:
                 anomalies.append(
-                    f"{outlier_count} outliers detected "
-                    f"(> {outlier_threshold:.2f})"
+                    f"{outlier_count} statistical outliers detected"
                 )
         
-        # Check for unusual category distribution
+        # Check for unusual category distributions
         category_counts = df.groupBy("category").count().collect()
-        total = df.count()
+        total_count = df.count()
         
         for row in category_counts:
-            percentage = (row['count'] / total) * 100
-            if percentage > 80:
+            pct = (row["count"] / total_count) * 100
+            if pct < 1:  # Less than 1% of data
                 anomalies.append(
-                    f"Category '{row.category}' represents {percentage:.1f}% of data"
+                    f"Category '{row['category']}' has unusually low "
+                    f"representation ({pct:.2f}%)"
                 )
         
-        logger.info(f"Anomaly detection complete - {len(anomalies)} anomalies found")
+        if anomalies:
+            self.logger.warning(f"Detected {len(anomalies)} anomalies")
         
         return anomalies
