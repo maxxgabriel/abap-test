@@ -1,78 +1,112 @@
 # ETL Configuration
-spark:
-  app_name: "ETL_Data_Extractor"
-  master: "local[*]"
-  log_level: "WARN"
-  configs:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
-    spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+# Centralized configuration for PySpark ETL pipeline
 
-# Source configurations
-source:
-  database:
-    format: "jdbc"
-    url: "jdbc:postgresql://localhost:5432/etl_source"
+spark:
+  app_name: "ETL_Pipeline"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: 200
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+
+database:
+  source:
+    type: "jdbc"
+    url: "jdbc:postgresql://localhost:5432/etl_db"
     driver: "org.postgresql.Driver"
-    table: "etl_source_data"
-    user: "${DB_USER}"
+    user: "etl_user"
+    password: "${DB_PASSWORD}"  # Use environment variable
+    table: "zetl_source_data"
+    
+  target:
+    type: "jdbc"
+    url: "jdbc:postgresql://localhost:5432/etl_db"
+    driver: "org.postgresql.Driver"
+    user: "etl_user"
     password: "${DB_PASSWORD}"
-    fetch_size: 10000
-    partition_column: "id"
-    num_partitions: 4
+    table: "zetl_target_data"
     
   staging:
-    path: "/data/staging"
-    format: "delta"
-    
-  incremental:
-    watermark_column: "changed_at"
-    checkpoint_location: "/data/checkpoints/incremental"
+    type: "jdbc"
+    url: "jdbc:postgresql://localhost:5432/etl_db"
+    driver: "org.postgresql.Driver"
+    table: "zetl_staging"
 
-# Target configurations
-target:
-  database:
-    format: "delta"
-    path: "/data/target/etl_target_data"
-    mode: "merge"
-    merge_keys: ["id"]
-    
-  reconciliation:
-    enabled: true
-    path: "/data/reconciliation"
-
-# Processing parameters
-processing:
-  default_max_records: 1000
-  batch_size: 1000
+extraction:
+  source_type: "DATABASE"  # DATABASE, STAGING, INCREMENTAL
   default_filter: null
-  enable_schema_validation: true
+  max_records: 0  # 0 = unlimited
+  fetch_size: 1000
+
+transformation:
+  # Category multipliers
+  category_multipliers:
+    PREMIUM: 1.5
+    VIP: 2.0
+    STANDARD: 1.2
+    BASIC: 1.0
+    DEFAULT: 1.1
   
-# Incremental load settings
-incremental:
-  enabled: true
-  last_run_table: "etl_run_log"
-  time_column: "changed_at"
-  time_format: "yyyy-MM-dd HH:mm:ss.SSSSSS"
+  # Priority thresholds
+  priority_thresholds:
+    high_value: 1000
+    medium_value: 500
+    low_value: 200
   
-# Delta Lake settings
-delta:
-  time_travel_enabled: true
-  retention_hours: 168  # 7 days
-  vacuum_enabled: true
-  optimize_after_write: true
+  # Status thresholds
+  status_thresholds:
+    high: 750
+    medium: 300
   
-# Logging
+  # Validation rules
+  validation:
+    required_fields:
+      - id
+      - name
+      - value
+    value_min: 0
+    priority_min: 1
+    priority_max: 5
+
+loading:
+  target_type: "DATABASE"
+  batch_size: 1000
+  mode: "UPSERT"  # INSERT, UPDATE, UPSERT
+  enable_reconciliation: true
+  write_mode: "append"  # append, overwrite
+
+business_rules:
+  premium_boost: 1.2
+  high_value_priority: 1
+  normalize_whitespace: true
+  default_category: "UNCATEGORIZED"
+
 logging:
-  level: "INFO"
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "/logs/etl_extractor.log"
-  max_bytes: 10485760  # 10MB
-  backup_count: 5
-  
-# Monitoring
+  file: "logs/etl_pipeline.log"
+  console: true
+
 monitoring:
   enabled: true
-  metrics_path: "/metrics/extractor"
-  dashboard_retention_days: 7
+  metrics_interval: 60  # seconds
+  health_check_interval: 300  # seconds
+  alert_email: "admin@example.com"
+  error_rate_threshold: 20  # percentage
+
+performance:
+  parallel_jobs: 4
+  retry_attempts: 3
+  retry_delay: 5  # seconds
+  timeout: 3600  # seconds
+
+data_quality:
+  enabled: true
+  checks:
+    - completeness
+    - uniqueness
+    - validity
+    - consistency
+  failure_threshold: 5  # percentage
