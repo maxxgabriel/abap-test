@@ -1,448 +1,521 @@
 """
-ETL Monitoring Module - PySpark Implementation
-Converts ABAP monitoring singleton to Python class with DataFrame aggregations
+ETL Monitoring Module with PySpark Aggregations
+Provides runtime metrics, performance tracking, and health monitoring
 """
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
 from pyspark.sql import SparkSession, DataFrame, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, 
     TimestampType, DoubleType, LongType
 )
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-import logging
+
+from logger import ETLLogger
+
+
+@dataclass
+class DashboardData:
+    """Dashboard metrics data class"""
+    total_runs: int
+    successful_runs: int
+    failed_runs: int
+    running_jobs: int
+    avg_duration: float
+    total_records: int
+    error_rate: float
+    last_run_time: Optional[datetime]
+    last_run_status: Optional[str]
+
+
+@dataclass
+class PerformanceMetric:
+    """Performance metric data class"""
+    run_id: str
+    start_time: datetime
+    duration: int
+    records_processed: int
+    throughput: float
+    status: str
 
 
 class ETLMonitor:
     """
-    Singleton ETL Monitor with PySpark DataFrame aggregations
-    Replaces ABAP zcl_etl_monitor with groupBy/agg operations
+    Singleton ETL monitoring class with PySpark DataFrame aggregations
+    Replaces ABAP SQL aggregations with groupBy/agg operations
     """
     
     _instance = None
-    _lock = None
     
-    def __new__(cls):
+    def __new__(cls, spark: SparkSession = None):
         if cls._instance is None:
             cls._instance = super(ETLMonitor, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
     
-    def __init__(self):
+    def __init__(self, spark: SparkSession = None):
+        """Initialize monitor with SparkSession"""
         if self._initialized:
             return
             
-        self.spark = SparkSession.builder.getOrCreate()
-        self.logger = logging.getLogger(__name__)
+        if spark is None:
+            raise ValueError("SparkSession is required for first initialization")
+            
+        self.spark = spark
+        self.logger = ETLLogger.get_instance()
         self._initialized = True
-        
-        # Define schemas for monitoring tables
-        self.run_log_schema = StructType([
-            StructField("run_id", StringType(), False),
-            StructField("status", StringType(), False),
-            StructField("start_time", TimestampType(), False),
-            StructField("end_time", TimestampType(), True),
-            StructField("duration", IntegerType(), True),
-            StructField("records_extracted", LongType(), True),
-            StructField("records_transformed", LongType(), True),
-            StructField("records_loaded", LongType(), True),
-            StructField("records_failed", LongType(), True),
-            StructField("error_count", IntegerType(), True),
-            StructField("warning_count", IntegerType(), True)
-        ])
-        
-        self.error_log_schema = StructType([
-            StructField("error_id", StringType(), False),
-            StructField("run_id", StringType(), False),
-            StructField("component", StringType(), False),
-            StructField("error_type", StringType(), False),
-            StructField("error_message", StringType(), False),
-            StructField("error_details", StringType(), True),
-            StructField("created_at", TimestampType(), False),
-            StructField("resolved", StringType(), True)
-        ])
     
     @classmethod
-    def get_instance(cls) -> 'ETLMonitor':
-        """Get singleton instance of ETL Monitor"""
-        return cls()
+    def get_instance(cls, spark: SparkSession = None) -> 'ETLMonitor':
+        """Get singleton instance"""
+        if cls._instance is None:
+            if spark is None:
+                raise ValueError("SparkSession required for first initialization")
+            cls._instance = ETLMonitor(spark)
+        return cls._instance
     
-    def get_dashboard_data(self, days_back: int = 7) -> Dict:
+    def get_dashboard_data(self, days_back: int = 7) -> DashboardData:
         """
-        Get dashboard statistics using PySpark aggregations
-        Replaces ABAP SELECT with groupBy/agg operations
+        Get dashboard metrics using PySpark aggregations
+        Replaces ABAP SELECT with COUNT/SUM/AVG aggregations
         
         Args:
             days_back: Number of days to look back
             
         Returns:
-            Dictionary with dashboard metrics
+            DashboardData with aggregated metrics
         """
-        self.logger.info(f"Fetching dashboard data for last {days_back} days")
-        
-        # Calculate cutoff timestamp
         cutoff_time = datetime.now() - timedelta(days=days_back)
         
-        # Load run log data (would be from Delta/Parquet in production)
-        run_log_df = self._load_run_log()
+        self.logger.log_info(
+            component="MONITOR",
+            message=f"Fetching dashboard data for last {days_back} days"
+        )
         
-        # Filter by time window
-        filtered_df = run_log_df.filter(F.col("start_time") >= cutoff_time)
-        
-        # Perform aggregations - replaces ABAP SQL aggregations
-        dashboard_stats = filtered_df.agg(
-            F.count("*").alias("total_runs"),
-            F.sum(F.when(F.col("status") == "SUCCESS", 1).otherwise(0)).alias("successful_runs"),
-            F.sum(F.when(
-                (F.col("status") == "FAILED") | (F.col("status") == "ERROR"), 
-                1
-            ).otherwise(0)).alias("failed_runs"),
-            F.sum(F.when(F.col("status") == "RUNNING", 1).otherwise(0)).alias("running_jobs"),
-            F.avg("duration").alias("avg_duration"),
-            F.sum("records_loaded").alias("total_records")
-        ).collect()[0]
-        
-        # Calculate error rate
-        total_runs = dashboard_stats["total_runs"] or 0
-        failed_runs = dashboard_stats["failed_runs"] or 0
-        error_rate = (failed_runs / total_runs * 100) if total_runs > 0 else 0.0
-        
-        # Get last run info using window function
-        window_spec = Window.orderBy(F.col("end_time").desc())
-        last_run = filtered_df.withColumn("rn", F.row_number().over(window_spec)) \
-            .filter(F.col("rn") == 1) \
-            .select("end_time", "status") \
-            .collect()
-        
-        last_run_time = last_run[0]["end_time"] if last_run else None
-        last_run_status = last_run[0]["status"] if last_run else None
-        
-        return {
-            "total_runs": total_runs,
-            "successful_runs": dashboard_stats["successful_runs"] or 0,
-            "failed_runs": failed_runs,
-            "running_jobs": dashboard_stats["running_jobs"] or 0,
-            "avg_duration": int(dashboard_stats["avg_duration"] or 0),
-            "total_records": dashboard_stats["total_records"] or 0,
-            "error_rate": round(error_rate, 2),
-            "last_run_time": last_run_time,
-            "last_run_status": last_run_status
-        }
+        try:
+            # Read run log data
+            run_log_df = self._read_run_log()
+            
+            # Filter by date range
+            filtered_df = run_log_df.filter(
+                F.col("start_time") >= F.lit(cutoff_time)
+            )
+            
+            # Perform aggregations - replaces ABAP SQL aggregations
+            stats_df = filtered_df.agg(
+                F.count("*").alias("total_runs"),
+                F.sum(
+                    F.when(F.col("status") == "SUCCESS", 1).otherwise(0)
+                ).alias("successful_runs"),
+                F.sum(
+                    F.when(
+                        (F.col("status") == "FAILED") | (F.col("status") == "ERROR"),
+                        1
+                    ).otherwise(0)
+                ).alias("failed_runs"),
+                F.sum(
+                    F.when(F.col("status") == "RUNNING", 1).otherwise(0)
+                ).alias("running_jobs"),
+                F.avg("duration").alias("avg_duration"),
+                F.sum("records_loaded").alias("total_records")
+            )
+            
+            # Collect results
+            stats = stats_df.collect()[0]
+            
+            # Calculate error rate
+            total_runs = stats["total_runs"] or 0
+            failed_runs = stats["failed_runs"] or 0
+            error_rate = (failed_runs / total_runs * 100) if total_runs > 0 else 0.0
+            
+            # Get last run info
+            last_run_df = run_log_df.orderBy(F.col("end_time").desc()).limit(1)
+            last_run = last_run_df.collect()
+            
+            last_run_time = last_run[0]["end_time"] if last_run else None
+            last_run_status = last_run[0]["status"] if last_run else None
+            
+            dashboard_data = DashboardData(
+                total_runs=stats["total_runs"] or 0,
+                successful_runs=stats["successful_runs"] or 0,
+                failed_runs=failed_runs,
+                running_jobs=stats["running_jobs"] or 0,
+                avg_duration=float(stats["avg_duration"] or 0),
+                total_records=stats["total_records"] or 0,
+                error_rate=error_rate,
+                last_run_time=last_run_time,
+                last_run_status=last_run_status
+            )
+            
+            self.logger.log_info(
+                component="MONITOR",
+                message=f"Dashboard data retrieved: {dashboard_data.total_runs} runs"
+            )
+            
+            return dashboard_data
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Failed to get dashboard data",
+                details=str(e)
+            )
+            raise
     
-    def get_performance_metrics(self, days_back: int = 30) -> DataFrame:
+    def get_performance_metrics(
+        self, 
+        days_back: int = 30
+    ) -> List[PerformanceMetric]:
         """
-        Get performance metrics using DataFrame operations
-        Replaces ABAP SELECT with PySpark transformations
+        Get performance metrics using PySpark operations
         
         Args:
-            days_back: Number of days to analyze
+            days_back: Number of days to look back
             
         Returns:
-            DataFrame with performance metrics
+            List of performance metrics
         """
-        self.logger.info(f"Calculating performance metrics for {days_back} days")
-        
         cutoff_time = datetime.now() - timedelta(days=days_back)
         
-        run_log_df = self._load_run_log()
-        
-        # Calculate throughput (records per second)
-        metrics_df = run_log_df.filter(F.col("start_time") >= cutoff_time) \
-            .withColumn(
+        try:
+            run_log_df = self._read_run_log()
+            
+            # Filter and calculate throughput
+            metrics_df = run_log_df.filter(
+                F.col("start_time") >= F.lit(cutoff_time)
+            ).withColumn(
                 "throughput",
                 F.when(
                     F.col("duration") > 0,
                     F.col("records_loaded") / F.col("duration")
-                ).otherwise(0)
-            ) \
-            .select(
-                "run_id",
-                "start_time",
-                "duration",
-                "records_loaded",
-                F.round("throughput", 2).alias("throughput"),
-                "status"
-            ) \
-            .orderBy(F.col("start_time").desc())
-        
-        return metrics_df
+                ).otherwise(0.0)
+            ).orderBy(
+                F.col("start_time").desc()
+            )
+            
+            # Convert to PerformanceMetric objects
+            metrics = []
+            for row in metrics_df.collect():
+                metric = PerformanceMetric(
+                    run_id=row["run_id"],
+                    start_time=row["start_time"],
+                    duration=row["duration"],
+                    records_processed=row["records_loaded"],
+                    throughput=float(row["throughput"]),
+                    status=row["status"]
+                )
+                metrics.append(metric)
+            
+            self.logger.log_info(
+                component="MONITOR",
+                message=f"Retrieved {len(metrics)} performance metrics"
+            )
+            
+            return metrics
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Failed to get performance metrics",
+                details=str(e)
+            )
+            raise
     
     def get_error_summary(self, days_back: int = 7) -> DataFrame:
         """
-        Get error summary using groupBy aggregations
-        Replaces ABAP error log query with DataFrame operations
+        Get error summary using PySpark aggregations
         
         Args:
             days_back: Number of days to look back
             
         Returns:
-            DataFrame with error summary grouped by type
+            DataFrame with error summary
         """
-        self.logger.info(f"Fetching error summary for {days_back} days")
-        
         cutoff_time = datetime.now() - timedelta(days=days_back)
         
-        error_log_df = self._load_error_log()
-        
-        # Group by error type and component - replaces ABAP GROUP BY
-        error_summary = error_log_df.filter(F.col("created_at") >= cutoff_time) \
-            .filter(F.col("resolved").isNull() | (F.col("resolved") == "")) \
-            .groupBy("error_type", "component") \
-            .agg(
+        try:
+            error_log_df = self._read_error_log()
+            
+            # Filter unresolved errors
+            errors_df = error_log_df.filter(
+                (F.col("created_at") >= F.lit(cutoff_time)) &
+                (F.col("resolved") == False)
+            ).orderBy(
+                F.col("created_at").desc()
+            )
+            
+            # Group by error type for summary
+            error_summary = errors_df.groupBy("error_type").agg(
                 F.count("*").alias("error_count"),
-                F.min("created_at").alias("first_occurrence"),
-                F.max("created_at").alias("last_occurrence"),
-                F.collect_list("error_message").alias("sample_messages")
-            ) \
-            .orderBy(F.col("error_count").desc())
-        
-        return error_summary
-    
-    def get_hourly_statistics(self, days_back: int = 1) -> DataFrame:
-        """
-        Calculate hourly aggregated statistics
-        Uses window functions for time-based grouping
-        
-        Args:
-            days_back: Number of days to analyze
+                F.collect_list("error_message").alias("messages")
+            ).orderBy(
+                F.col("error_count").desc()
+            )
             
-        Returns:
-            DataFrame with hourly statistics
-        """
-        cutoff_time = datetime.now() - timedelta(days=days_back)
-        
-        run_log_df = self._load_run_log()
-        
-        # Extract hour from timestamp and aggregate
-        hourly_stats = run_log_df.filter(F.col("start_time") >= cutoff_time) \
-            .withColumn("hour", F.date_trunc("hour", "start_time")) \
-            .groupBy("hour") \
-            .agg(
-                F.count("*").alias("runs_per_hour"),
-                F.sum("records_loaded").alias("total_records"),
-                F.avg("duration").alias("avg_duration"),
-                F.sum(F.when(F.col("status") == "SUCCESS", 1).otherwise(0)).alias("successful"),
-                F.sum(F.when(F.col("status") == "FAILED", 1).otherwise(0)).alias("failed")
-            ) \
-            .withColumn("success_rate", 
-                F.round((F.col("successful") / F.col("runs_per_hour")) * 100, 2)
-            ) \
-            .orderBy("hour")
-        
-        return hourly_stats
+            return error_summary
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Failed to get error summary",
+                details=str(e)
+            )
+            raise
     
-    def check_health(self) -> Tuple[str, Dict]:
+    def check_health(self) -> str:
         """
-        Perform health check using aggregations
-        Replaces ABAP health check logic with DataFrame operations
+        Check system health based on metrics
         
         Returns:
-            Tuple of (health_status, details_dict)
+            Health status string
         """
-        self.logger.info("Performing health check")
-        
-        dashboard = self.get_dashboard_data(days_back=1)
-        
-        health_status = "HEALTHY"
-        issues = []
-        
-        # Check for overload
-        if dashboard["running_jobs"] > 5:
-            health_status = "OVERLOADED"
-            issues.append(f"Too many running jobs: {dashboard['running_jobs']}")
-            self._send_alert(
-                alert_type="PERFORMANCE",
-                message=f"Too many running jobs: {dashboard['running_jobs']}",
-                severity="HIGH"
-            )
-        
-        # Check error rate
-        if dashboard["error_rate"] > 50:
-            health_status = "CRITICAL"
-            issues.append(f"Critical error rate: {dashboard['error_rate']}%")
-            self._send_alert(
-                alert_type="ERROR_RATE",
-                message=f"High error rate: {dashboard['error_rate']}%",
-                severity="CRITICAL"
-            )
-        elif dashboard["error_rate"] > 20:
-            health_status = "WARNING"
-            issues.append(f"Elevated error rate: {dashboard['error_rate']}%")
-            self._send_alert(
-                alert_type="ERROR_RATE",
-                message=f"Elevated error rate: {dashboard['error_rate']}%",
-                severity="MEDIUM"
-            )
-        
-        # Check for stalled jobs
-        if dashboard["running_jobs"] > 0:
-            stalled_jobs = self._check_stalled_jobs()
-            if stalled_jobs > 0:
+        try:
+            dashboard = self.get_dashboard_data(days_back=1)
+            
+            # Health check logic
+            if dashboard.running_jobs > 5:
+                health_status = "OVERLOADED"
+                self.send_alert(
+                    alert_type="PERFORMANCE",
+                    message=f"Too many running jobs: {dashboard.running_jobs}",
+                    severity="HIGH"
+                )
+            elif dashboard.error_rate > 50:
+                health_status = "CRITICAL"
+                self.send_alert(
+                    alert_type="ERROR_RATE",
+                    message=f"High error rate: {dashboard.error_rate:.2f}%",
+                    severity="CRITICAL"
+                )
+            elif dashboard.error_rate > 20:
                 health_status = "WARNING"
-                issues.append(f"Detected {stalled_jobs} stalled jobs")
-        
-        return health_status, {
-            "status": health_status,
-            "issues": issues,
-            "dashboard": dashboard
-        }
-    
-    def get_performance_trends(self, days_back: int = 30) -> DataFrame:
-        """
-        Calculate performance trends using window functions
-        Analyzes throughput and duration trends over time
-        
-        Args:
-            days_back: Number of days to analyze
+                self.send_alert(
+                    alert_type="ERROR_RATE",
+                    message=f"Elevated error rate: {dashboard.error_rate:.2f}%",
+                    severity="MEDIUM"
+                )
+            elif dashboard.failed_runs == 0 and dashboard.successful_runs > 0:
+                health_status = "HEALTHY"
+            else:
+                health_status = "UNKNOWN"
             
-        Returns:
-            DataFrame with trend analysis
-        """
-        cutoff_time = datetime.now() - timedelta(days=days_back)
-        
-        run_log_df = self._load_run_log()
-        
-        # Define window for moving averages
-        days_window = Window.orderBy("day").rowsBetween(-6, 0)
-        
-        # Calculate daily aggregates with moving averages
-        trends_df = run_log_df.filter(F.col("start_time") >= cutoff_time) \
-            .withColumn("day", F.to_date("start_time")) \
-            .groupBy("day") \
-            .agg(
-                F.avg("duration").alias("avg_duration"),
-                F.sum("records_loaded").alias("records"),
-                F.count("*").alias("runs"),
-                F.sum(F.when(F.col("status") == "SUCCESS", 1).otherwise(0)).alias("successful")
-            ) \
-            .withColumn("success_rate", (F.col("successful") / F.col("runs")) * 100) \
-            .withColumn("avg_duration_7day", F.avg("avg_duration").over(days_window)) \
-            .withColumn("records_7day", F.avg("records").over(days_window)) \
-            .orderBy("day")
-        
-        return trends_df
-    
-    def get_category_statistics(self) -> DataFrame:
-        """
-        Get statistics grouped by category
-        Uses multiple groupBy operations for hierarchical aggregation
-        
-        Returns:
-            DataFrame with category-level statistics
-        """
-        run_log_df = self._load_run_log()
-        
-        # Join with execution details to get category information
-        # (In production, this would join with additional metadata)
-        category_stats = run_log_df.groupBy("status") \
-            .agg(
-                F.count("*").alias("count"),
-                F.avg("duration").alias("avg_duration"),
-                F.sum("records_loaded").alias("total_records"),
-                F.min("start_time").alias("first_run"),
-                F.max("start_time").alias("last_run")
-            ) \
-            .orderBy(F.col("count").desc())
-        
-        return category_stats
-    
-    def detect_anomalies(self, threshold_std: float = 2.0) -> DataFrame:
-        """
-        Detect anomalies using statistical aggregations
-        Uses standard deviation and z-scores
-        
-        Args:
-            threshold_std: Standard deviation threshold for anomaly detection
+            self.logger.log_info(
+                component="MONITOR",
+                message=f"Health check complete: {health_status}"
+            )
             
-        Returns:
-            DataFrame with detected anomalies
-        """
-        run_log_df = self._load_run_log()
-        
-        # Calculate statistics for anomaly detection
-        stats = run_log_df.filter(F.col("status") == "SUCCESS") \
-            .agg(
-                F.mean("duration").alias("mean_duration"),
-                F.stddev("duration").alias("stddev_duration"),
-                F.mean("records_loaded").alias("mean_records"),
-                F.stddev("records_loaded").alias("stddev_records")
-            ).collect()[0]
-        
-        mean_duration = stats["mean_duration"] or 0
-        stddev_duration = stats["stddev_duration"] or 1
-        mean_records = stats["mean_records"] or 0
-        stddev_records = stats["stddev_records"] or 1
-        
-        # Calculate z-scores and flag anomalies
-        anomalies_df = run_log_df \
-            .withColumn("duration_zscore",
-                (F.col("duration") - F.lit(mean_duration)) / F.lit(stddev_duration)
-            ) \
-            .withColumn("records_zscore",
-                (F.col("records_loaded") - F.lit(mean_records)) / F.lit(stddev_records)
-            ) \
-            .filter(
-                (F.abs(F.col("duration_zscore")) > threshold_std) |
-                (F.abs(F.col("records_zscore")) > threshold_std)
-            ) \
-            .select(
-                "run_id",
-                "start_time",
-                "duration",
-                "records_loaded",
-                F.round("duration_zscore", 2).alias("duration_zscore"),
-                F.round("records_zscore", 2).alias("records_zscore")
-            ) \
-            .orderBy(F.col("start_time").desc())
-        
-        return anomalies_df
+            return health_status
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Health check failed",
+                details=str(e)
+            )
+            return "ERROR"
     
-    def _load_run_log(self) -> DataFrame:
+    def send_alert(
+        self, 
+        alert_type: str, 
+        message: str, 
+        severity: str
+    ) -> None:
         """
-        Load run log data from storage
-        In production, this would read from Delta Lake or Parquet
-        """
-        # Placeholder - would load from actual storage
-        return self.spark.createDataFrame([], self.run_log_schema)
-    
-    def _load_error_log(self) -> DataFrame:
-        """
-        Load error log data from storage
-        """
-        # Placeholder - would load from actual storage
-        return self.spark.createDataFrame([], self.error_log_schema)
-    
-    def _check_stalled_jobs(self) -> int:
-        """
-        Check for stalled jobs (running > 2 hours)
-        Uses timestamp arithmetic
-        """
-        cutoff_time = datetime.now() - timedelta(hours=2)
-        
-        run_log_df = self._load_run_log()
-        
-        stalled_count = run_log_df.filter(
-            (F.col("status") == "RUNNING") &
-            (F.col("start_time") < cutoff_time)
-        ).count()
-        
-        return stalled_count
-    
-    def _send_alert(self, alert_type: str, message: str, severity: str):
-        """
-        Send monitoring alert
+        Send alert notification
         
         Args:
             alert_type: Type of alert
             message: Alert message
             severity: Alert severity level
         """
-        self.logger.warning(f"ALERT [{severity}] {alert_type}: {message}")
-        # In production, integrate with alerting system (PagerDuty, Slack, etc.)
+        self.logger.log_warning(
+            component="ALERT",
+            message=f"[{severity}] {alert_type}: {message}"
+        )
+        
+        # In production, implement actual alerting mechanism
+        # (email, Slack, PagerDuty, etc.)
     
-    def calculate_throughput(self, records: int, duration: int) -> float:
+    def get_aggregated_stats_by_status(
+        self, 
+        days_back: int = 30
+    ) -> DataFrame:
         """
-        Calculate throughput in records per second
+        Get aggregated statistics grouped by status
+        Uses PySpark groupBy and agg operations
+        
+        Args:
+            days_back: Number of days to look back
+            
+        Returns:
+            DataFrame with aggregated stats by status
+        """
+        cutoff_time = datetime.now() - timedelta(days=days_back)
+        
+        try:
+            run_log_df = self._read_run_log()
+            
+            # Group by status and aggregate metrics
+            stats_by_status = run_log_df.filter(
+                F.col("start_time") >= F.lit(cutoff_time)
+            ).groupBy("status").agg(
+                F.count("*").alias("run_count"),
+                F.avg("duration").alias("avg_duration"),
+                F.min("duration").alias("min_duration"),
+                F.max("duration").alias("max_duration"),
+                F.sum("records_loaded").alias("total_records"),
+                F.avg("records_loaded").alias("avg_records")
+            ).orderBy(
+                F.col("run_count").desc()
+            )
+            
+            return stats_by_status
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Failed to get aggregated stats",
+                details=str(e)
+            )
+            raise
+    
+    def get_hourly_throughput(
+        self, 
+        days_back: int = 7
+    ) -> DataFrame:
+        """
+        Calculate hourly throughput using window functions
+        
+        Args:
+            days_back: Number of days to look back
+            
+        Returns:
+            DataFrame with hourly throughput metrics
+        """
+        cutoff_time = datetime.now() - timedelta(days=days_back)
+        
+        try:
+            run_log_df = self._read_run_log()
+            
+            # Extract hour from timestamp and calculate throughput
+            hourly_df = run_log_df.filter(
+                F.col("start_time") >= F.lit(cutoff_time)
+            ).withColumn(
+                "hour",
+                F.hour(F.col("start_time"))
+            ).withColumn(
+                "date",
+                F.to_date(F.col("start_time"))
+            ).withColumn(
+                "throughput",
+                F.when(
+                    F.col("duration") > 0,
+                    F.col("records_loaded") / F.col("duration")
+                ).otherwise(0.0)
+            )
+            
+            # Aggregate by hour
+            hourly_stats = hourly_df.groupBy("date", "hour").agg(
+                F.count("*").alias("run_count"),
+                F.avg("throughput").alias("avg_throughput"),
+                F.max("throughput").alias("max_throughput"),
+                F.sum("records_loaded").alias("total_records")
+            ).orderBy("date", "hour")
+            
+            return hourly_stats
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Failed to calculate hourly throughput",
+                details=str(e)
+            )
+            raise
+    
+    def get_trend_analysis(
+        self, 
+        days_back: int = 30
+    ) -> Dict[str, float]:
+        """
+        Perform trend analysis using window functions
+        
+        Args:
+            days_back: Number of days to analyze
+            
+        Returns:
+            Dictionary with trend metrics
+        """
+        cutoff_time = datetime.now() - timedelta(days=days_back)
+        
+        try:
+            run_log_df = self._read_run_log()
+            
+            # Calculate daily aggregates
+            daily_df = run_log_df.filter(
+                F.col("start_time") >= F.lit(cutoff_time)
+            ).withColumn(
+                "date",
+                F.to_date(F.col("start_time"))
+            ).groupBy("date").agg(
+                F.count("*").alias("daily_runs"),
+                F.avg("duration").alias("avg_duration"),
+                F.sum("records_loaded").alias("daily_records"),
+                F.sum(
+                    F.when(F.col("status") == "SUCCESS", 1).otherwise(0)
+                ).alias("success_count")
+            )
+            
+            # Calculate moving averages using window functions
+            window_spec = Window.orderBy("date").rowsBetween(-6, 0)
+            
+            trend_df = daily_df.withColumn(
+                "ma_7_runs",
+                F.avg("daily_runs").over(window_spec)
+            ).withColumn(
+                "ma_7_duration",
+                F.avg("avg_duration").over(window_spec)
+            ).withColumn(
+                "ma_7_records",
+                F.avg("daily_records").over(window_spec)
+            )
+            
+            # Get latest values
+            latest = trend_df.orderBy(F.col("date").desc()).limit(1).collect()
+            
+            if latest:
+                row = latest[0]
+                trends = {
+                    "avg_daily_runs": float(row["ma_7_runs"] or 0),
+                    "avg_duration": float(row["ma_7_duration"] or 0),
+                    "avg_daily_records": float(row["ma_7_records"] or 0),
+                    "latest_date": row["date"].isoformat()
+                }
+            else:
+                trends = {
+                    "avg_daily_runs": 0.0,
+                    "avg_duration": 0.0,
+                    "avg_daily_records": 0.0,
+                    "latest_date": None
+                }
+            
+            return trends
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="MONITOR",
+                message="Failed to perform trend analysis",
+                details=str(e)
+            )
+            raise
+    
+    def calculate_throughput(
+        self, 
+        records: int, 
+        duration: int
+    ) -> float:
+        """
+        Calculate throughput (records per second)
         
         Args:
             records: Number of records processed
@@ -452,82 +525,90 @@ class ETLMonitor:
             Throughput value
         """
         if duration > 0:
-            return round(records / duration, 2)
+            return records / duration
         return 0.0
+    
+    def _read_run_log(self) -> DataFrame:
+        """Read run log data with schema"""
+        schema = StructType([
+            StructField("run_id", StringType(), False),
+            StructField("start_time", TimestampType(), False),
+            StructField("end_time", TimestampType(), True),
+            StructField("duration", IntegerType(), True),
+            StructField("status", StringType(), False),
+            StructField("records_extracted", IntegerType(), True),
+            StructField("records_loaded", IntegerType(), True),
+            StructField("records_failed", IntegerType(), True),
+            StructField("error_count", IntegerType(), True)
+        ])
+        
+        # Read from configured source (file, table, etc.)
+        # This is a placeholder - implement based on your storage
+        return self.spark.read.schema(schema).parquet("data/run_log")
+    
+    def _read_error_log(self) -> DataFrame:
+        """Read error log data with schema"""
+        schema = StructType([
+            StructField("error_id", StringType(), False),
+            StructField("run_id", StringType(), False),
+            StructField("error_type", StringType(), False),
+            StructField("error_message", StringType(), False),
+            StructField("created_at", TimestampType(), False),
+            StructField("resolved", StringType(), False),
+            StructField("component", StringType(), True)
+        ])
+        
+        df = self.spark.read.schema(schema).parquet("data/error_log")
+        
+        # Convert resolved to boolean
+        df = df.withColumn(
+            "resolved",
+            F.when(F.col("resolved") == "X", True).otherwise(False)
+        )
+        
+        return df
 
 
-===FILE: config.yaml===
-# ETL Monitor Configuration
-
-spark:
-  app_name: "ETL_Monitor"
-  master: "local[*]"
-  config:
-    spark.sql.adaptive.enabled: "true"
-    spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.sql.shuffle.partitions: "200"
-
-monitoring:
-  dashboard:
-    default_days_back: 7
-    max_days_back: 90
-    refresh_interval_seconds: 300
-  
-  performance:
-    threshold_std_dev: 2.0
-    slow_job_threshold_seconds: 3600
-    stalled_job_threshold_hours: 2
-  
-  health_check:
-    running_jobs_threshold: 5
-    error_rate_warning: 20.0
-    error_rate_critical: 50.0
-  
-  alerts:
-    enabled: true
-    email_recipients:
-      - "admin@example.com"
-      - "ops-team@example.com"
-    severity_levels:
-      - "LOW"
-      - "MEDIUM"
-      - "HIGH"
-      - "CRITICAL"
-
-storage:
-  run_log_path: "s3://etl-bucket/logs/run_log/"
-  error_log_path: "s3://etl-bucket/logs/error_log/"
-  metrics_path: "s3://etl-bucket/metrics/"
-  format: "delta"
-  
-  retention:
-    run_log_days: 90
-    error_log_days: 180
-    metrics_days: 365
-
-aggregations:
-  hourly_stats_window: "1 hour"
-  daily_stats_window: "1 day"
-  weekly_stats_window: "7 days"
-  
-  metrics:
-    - name: "throughput"
-      type: "gauge"
-      unit: "records_per_second"
-    - name: "duration"
-      type: "histogram"
-      unit: "seconds"
-    - name: "error_rate"
-      type: "gauge"
-      unit: "percentage"
-
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  handlers:
-    console: true
-    file:
-      enabled: true
-      path: "/var/log/etl/monitor.log"
-      max_bytes: 10485760
-      backup_count: 5
+def create_monitor_report(
+    monitor: ETLMonitor,
+    output_path: str
+) -> None:
+    """
+    Generate comprehensive monitoring report
+    
+    Args:
+        monitor: ETLMonitor instance
+        output_path: Path to save report
+    """
+    try:
+        # Get all metrics
+        dashboard = monitor.get_dashboard_data(days_back=7)
+        performance = monitor.get_performance_metrics(days_back=30)
+        health = monitor.check_health()
+        trends = monitor.get_trend_analysis(days_back=30)
+        
+        # Create report DataFrame
+        report_data = {
+            "dashboard": asdict(dashboard),
+            "health_status": health,
+            "trends": trends,
+            "performance_samples": len(performance)
+        }
+        
+        # Save as JSON
+        import json
+        with open(output_path, 'w') as f:
+            json.dump(report_data, f, indent=2, default=str)
+        
+        monitor.logger.log_info(
+            component="MONITOR",
+            message=f"Report generated: {output_path}"
+        )
+        
+    except Exception as e:
+        monitor.logger.log_error(
+            component="MONITOR",
+            message="Failed to create report",
+            details=str(e)
+        )
+        raise
