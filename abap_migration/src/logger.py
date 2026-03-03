@@ -1,132 +1,229 @@
 """
-Logging Utility Module
-Standardized logging for ETL framework
+Standardized logging utilities for ETL framework.
+Provides structured logging with multiple handlers and formatters.
 """
 
 import logging
 import sys
-from typing import Optional
-from pathlib import Path
-from logging.handlers import RotatingFileHandler
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Optional
+from pyspark.sql import SparkSession
 
 from src.config_manager import config
 
 
 class ETLLogger:
-    """Centralized logging utility for ETL processes"""
+    """
+    ETL framework logger with multiple output handlers.
+    Supports console, file, and database logging.
+    """
     
     _loggers = {}
     
     @staticmethod
-    def get_logger(component: str, spark_session=None) -> logging.Logger:
+    def get_logger(name: str) -> logging.Logger:
         """
-        Get or create logger for a component
+        Get or create logger instance.
         
         Args:
-            component: Component name (e.g., 'EXTRACTOR', 'TRANSFORMER')
-            spark_session: Optional Spark session for Spark logging
+            name: Logger name (typically module name)
             
         Returns:
             Configured logger instance
         """
-        if component in ETLLogger._loggers:
-            return ETLLogger._loggers[component]
+        if name in ETLLogger._loggers:
+            return ETLLogger._loggers[name]
         
-        logger = logging.getLogger(component)
-        logger.setLevel(getattr(logging, config.get_log_level()))
+        logger = logging.getLogger(name)
         
-        # Remove existing handlers
-        logger.handlers = []
+        # Get logging configuration
+        log_config = config.get_logging_config()
+        level = log_config.get('level', 'INFO')
+        logger.setLevel(getattr(logging, level))
+        
+        # Remove existing handlers to avoid duplicates
+        logger.handlers.clear()
         
         # Create formatter
-        log_format = config.get('logging.format',
-                               '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        log_format = log_config.get('format', 
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         formatter = logging.Formatter(log_format)
         
         # Console handler
-        if config.get('logging.console_output', True):
+        if log_config.get('console', {}).get('enabled', True):
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
         
         # File handler
-        log_file = config.get('logging.file_path', 'logs/etl_process.log')
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        max_bytes = config.get('logging.max_file_size', 10485760)
-        backup_count = config.get('logging.backup_count', 5)
-        
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        
-        # Spark logging integration
-        if spark_session is not None:
-            spark_logger = spark_session.sparkContext._jvm.org.apache.log4j.Logger
-            spark_logger.getLogger(component).setLevel(
-                getattr(spark_session.sparkContext._jvm.org.apache.log4j.Level,
-                       config.get_log_level())
+        file_config = log_config.get('file', {})
+        if file_config.get('enabled', True):
+            log_file = file_config.get('path', 'logs/etl_framework.log')
+            
+            # Ensure log directory exists
+            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+            
+            max_bytes = file_config.get('max_bytes', 10485760)  # 10MB
+            backup_count = file_config.get('backup_count', 5)
+            
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=max_bytes,
+                backupCount=backup_count
             )
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
         
-        ETLLogger._loggers[component] = logger
+        # Prevent propagation to root logger
+        logger.propagate = False
+        
+        ETLLogger._loggers[name] = logger
         return logger
     
     @staticmethod
-    def log_info(component: str, message: str, details: Optional[str] = None):
-        """Log info message"""
-        logger = ETLLogger.get_logger(component)
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
-        logger.info(full_message)
+    def log_to_database(
+        spark: SparkSession,
+        run_id: str,
+        level: str,
+        component: str,
+        message: str,
+        details: Optional[str] = None
+    ) -> None:
+        """
+        Log message to database table.
+        
+        Args:
+            spark: SparkSession instance
+            run_id: ETL run identifier
+            level: Log level (INFO, WARNING, ERROR)
+            component: Component name
+            message: Log message
+            details: Additional details
+        """
+        log_config = config.get_logging_config()
+        
+        if not log_config.get('database', {}).get('enabled', False):
+            return
+        
+        try:
+            from pyspark.sql.types import StructType, StructField, StringType, TimestampType
+            
+            schema = StructType([
+                StructField("run_id", StringType(), False),
+                StructField("timestamp", TimestampType(), False),
+                StructField("level", StringType(), False),
+                StructField("component", StringType(), False),
+                StructField("message", StringType(), False),
+                StructField("details", StringType(), True)
+            ])
+            
+            log_data = [(
+                run_id,
+                datetime.now(),
+                level,
+                component,
+                message,
+                details
+            )]
+            
+            log_df = spark.createDataFrame(log_data, schema)
+            
+            # Get database configuration
+            db_config = config.get_database_config('target')
+            table_name = log_config.get('database', {}).get('table', 'etl_run_log')
+            
+            log_df.write \
+                .format("jdbc") \
+                .option("url", db_config['jdbc_url']) \
+                .option("dbtable", table_name) \
+                .option("user", db_config['user']) \
+                .option("password", db_config.get('password', '')) \
+                .mode("append") \
+                .save()
+                
+        except Exception as e:
+            # Fallback to console logging if database logging fails
+            logger = ETLLogger.get_logger(__name__)
+            logger.warning(f"Failed to log to database: {str(e)}")
+
+
+class ComponentLogger:
+    """
+    Component-specific logger wrapper with context.
+    Automatically adds component name to all log messages.
+    """
     
-    @staticmethod
-    def log_error(component: str, message: str, details: Optional[str] = None,
-                  exception: Optional[Exception] = None):
-        """Log error message"""
-        logger = ETLLogger.get_logger(component)
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
+    def __init__(self, component_name: str, run_id: Optional[str] = None):
+        """
+        Initialize component logger.
+        
+        Args:
+            component_name: Name of the component
+            run_id: Optional run identifier for correlation
+        """
+        self.component_name = component_name
+        self.run_id = run_id
+        self.logger = ETLLogger.get_logger(component_name)
+        self.spark: Optional[SparkSession] = None
+    
+    def set_spark(self, spark: SparkSession) -> None:
+        """Set SparkSession for database logging."""
+        self.spark = spark
+    
+    def _format_message(self, message: str) -> str:
+        """Format message with component context."""
+        if self.run_id:
+            return f"[{self.component_name}] [{self.run_id}] {message}"
+        return f"[{self.component_name}] {message}"
+    
+    def info(self, message: str, details: Optional[str] = None) -> None:
+        """Log info message."""
+        formatted_msg = self._format_message(message)
+        self.logger.info(formatted_msg)
+        
+        if self.spark and self.run_id:
+            ETLLogger.log_to_database(
+                self.spark, self.run_id, 'INFO', 
+                self.component_name, message, details
+            )
+    
+    def warning(self, message: str, details: Optional[str] = None) -> None:
+        """Log warning message."""
+        formatted_msg = self._format_message(message)
+        self.logger.warning(formatted_msg)
+        
+        if self.spark and self.run_id:
+            ETLLogger.log_to_database(
+                self.spark, self.run_id, 'WARNING',
+                self.component_name, message, details
+            )
+    
+    def error(self, message: str, details: Optional[str] = None, 
+              exception: Optional[Exception] = None) -> None:
+        """Log error message."""
+        formatted_msg = self._format_message(message)
+        
         if exception:
-            logger.error(full_message, exc_info=True)
+            self.logger.error(formatted_msg, exc_info=True)
+            if details is None:
+                details = str(exception)
         else:
-            logger.error(full_message)
+            self.logger.error(formatted_msg)
+        
+        if self.spark and self.run_id:
+            ETLLogger.log_to_database(
+                self.spark, self.run_id, 'ERROR',
+                self.component_name, message, details
+            )
     
-    @staticmethod
-    def log_warning(component: str, message: str, details: Optional[str] = None):
-        """Log warning message"""
-        logger = ETLLogger.get_logger(component)
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
-        logger.warning(full_message)
+    def debug(self, message: str) -> None:
+        """Log debug message."""
+        formatted_msg = self._format_message(message)
+        self.logger.debug(formatted_msg)
     
-    @staticmethod
-    def log_debug(component: str, message: str, details: Optional[str] = None):
-        """Log debug message"""
-        logger = ETLLogger.get_logger(component)
-        full_message = f"{message}"
-        if details:
-            full_message += f" | Details: {details}"
-        logger.debug(full_message)
-    
-    @staticmethod
-    def log_execution_time(component: str, operation: str, start_time: datetime):
-        """Log execution time for an operation"""
-        duration = (datetime.now() - start_time).total_seconds()
-        logger = ETLLogger.get_logger(component)
-        logger.info(f"{operation} completed in {duration:.2f} seconds")
-    
-    @staticmethod
-    def log_metrics(component: str, metrics: dict):
-        """Log performance metrics"""
-        logger = ETLLogger.get_logger(component)
-        metrics_str = " | ".join([f"{k}: {v}" for k, v in metrics.items()])
-        logger.info(f"Metrics: {metrics_str}")
+    def exception(self, message: str) -> None:
+        """Log exception with traceback."""
+        formatted_msg = self._format_message(message)
+        self.logger.exception(formatted_msg)
