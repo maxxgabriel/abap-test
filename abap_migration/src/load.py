@@ -1,98 +1,121 @@
 """
-PySpark ETL Loader Module
-Migrated from zcl_etl_loader.abap
+PySpark Data Loader with Delta Lake
+Converts ABAP loader logic to PySpark DataFrame operations
 """
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
+from delta import DeltaTable
 from typing import Dict, List
-import logging
+from dataclasses import dataclass
+from src.logger import ETLLogger
 
 
+@dataclass
 class LoadResult:
-    """Result of data loading operation."""
-    
-    def __init__(self):
-        self.success_count: int = 0
-        self.error_count: int = 0
-        self.total_count: int = 0
-        self.errors: List[str] = []
+    """Results of load operation"""
+    success_count: int
+    error_count: int
+    total_count: int
+    errors: List[str]
 
 
-class ETLLoader:
-    """Load transformed data to target destination."""
+class DataLoader:
+    """Loads data to target using PySpark and Delta Lake"""
     
-    def __init__(self, target_type: str = "DATABASE", batch_size: int = 1000, 
-                 run_id: str = None, spark: SparkSession = None):
+    def __init__(self, spark: SparkSession, target_type: str = "DATABASE", 
+                 batch_size: int = 1000, run_id: str = None):
         """
-        Initialize ETL Loader.
+        Initialize loader
         
         Args:
-            target_type: Type of target (DATABASE, etc.)
-            batch_size: Number of records per batch
+            spark: Active SparkSession
+            target_type: Type of target (DATABASE, DELTA, etc.)
+            batch_size: Batch size for processing
             run_id: Unique run identifier
-            spark: SparkSession instance
         """
-        self.target_type = target_type
+        self.spark = spark
+        self.target_type = target_type.upper()
         self.batch_size = batch_size
         self.run_id = run_id
-        self.spark = spark or SparkSession.builder.getOrCreate()
-        self.logger = logging.getLogger(__name__)
-        
-    def load_data(self, df: DataFrame, mode: str = "INSERT") -> LoadResult:
+        self.logger = ETLLogger.get_instance()
+    
+    def load_data(self, df: DataFrame, mode: str = "upsert") -> LoadResult:
         """
-        Load data to target destination.
+        Main load method with batch processing
         
         Args:
             df: DataFrame to load
-            mode: Load mode (INSERT, UPDATE, UPSERT)
+            mode: Load mode (insert, update, upsert, overwrite)
             
         Returns:
-            LoadResult with operation statistics
+            LoadResult with statistics
         """
-        self.logger.info(f"Starting load - Mode: {mode}, Batch size: {self.batch_size}")
+        self.logger.log_info(
+            component="LOADER",
+            message=f"Starting load - Mode: {mode}, Batch size: {self.batch_size}"
+        )
         
-        result = LoadResult()
-        result.total_count = df.count()
+        total_count = df.count()
+        errors = []
+        success_count = 0
+        error_count = 0
         
         try:
-            # Load based on mode
-            if mode == "INSERT":
+            # Execute load based on mode
+            if mode.lower() == "insert":
                 success = self._insert_new(df)
-            elif mode == "UPDATE":
+            elif mode.lower() == "update":
                 success = self._update_existing(df)
-            elif mode == "UPSERT":
-                success = self._upsert(df)
+            elif mode.lower() == "upsert":
+                success = self._upsert_data(df)
+            elif mode.lower() == "overwrite":
+                success = self._overwrite_data(df)
             else:
                 success = self._insert_new(df)
             
             if success:
-                result.success_count = result.total_count
-                self.logger.info(f"Successfully loaded {result.success_count} records")
+                success_count = total_count
+                
+                # Perform reconciliation if enabled
+                if self._is_reconciliation_enabled():
+                    reconciled = self.reconcile_data(df)
+                    if not reconciled:
+                        self.logger.log_warning(
+                            component="LOADER",
+                            message="Data reconciliation failed"
+                        )
             else:
-                result.error_count = result.total_count
-                result.errors.append("Load operation failed")
-                self.logger.error("Load operation failed")
-            
-            # Reconcile data
-            if success:
-                reconciled = self._reconcile_data(df)
-                if not reconciled:
-                    self.logger.warning("Data reconciliation failed")
-                    result.errors.append("Reconciliation check failed")
-            
+                error_count = total_count
+                errors.append("Load operation failed")
+                
         except Exception as e:
-            self.logger.error(f"Load error: {str(e)}")
-            result.error_count = result.total_count
-            result.errors.append(str(e))
+            error_count = total_count
+            errors.append(str(e))
+            self.logger.log_error(
+                component="LOADER",
+                message="Load failed",
+                details=str(e)
+            )
         
-        self.logger.info(f"Load complete - Success: {result.success_count}, Errors: {result.error_count}")
+        result = LoadResult(
+            success_count=success_count,
+            error_count=error_count,
+            total_count=total_count,
+            errors=errors
+        )
+        
+        self.logger.log_info(
+            component="LOADER",
+            message=f"Load complete - Success: {success_count}, Errors: {error_count}"
+        )
         
         return result
     
     def _insert_new(self, df: DataFrame) -> bool:
         """
-        Insert new records to target.
+        Insert new records
+        Replaces: INSERT zetl_target_data FROM TABLE lt_target_tab
         
         Args:
             df: DataFrame to insert
@@ -101,22 +124,30 @@ class ETLLoader:
             True if successful
         """
         try:
-            df.write \
-                .format("jdbc") \
-                .option("url", self._get_jdbc_url()) \
-                .option("dbtable", "zetl_target_data") \
-                .option("driver", self._get_jdbc_driver()) \
-                .mode("append") \
-                .save()
+            target_table = self.spark.conf.get("spark.etl.target_table", "etl_target_data")
             
+            df.write \
+                .format("delta") \
+                .mode("append") \
+                .save(target_table)
+            
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Inserted {df.count()} records"
+            )
             return True
+            
         except Exception as e:
-            self.logger.error(f"Insert failed: {str(e)}")
+            self.logger.log_error(
+                component="LOADER",
+                message="Insert failed",
+                details=str(e)
+            )
             return False
     
     def _update_existing(self, df: DataFrame) -> bool:
         """
-        Update existing records in target.
+        Update existing records using Delta Lake merge
         
         Args:
             df: DataFrame with updates
@@ -125,26 +156,36 @@ class ETLLoader:
             True if successful
         """
         try:
-            # Create temporary view for merge operation
-            df.createOrReplaceTempView("updates")
+            target_table = self.spark.conf.get("spark.etl.target_table", "etl_target_data")
+            delta_table = DeltaTable.forPath(self.spark, target_table)
             
-            # Execute update via JDBC or Delta Lake merge
-            # This is a simplified version - actual implementation depends on target DB
-            self.spark.sql("""
-                MERGE INTO zetl_target_data AS target
-                USING updates AS source
-                ON target.id = source.id
-                WHEN MATCHED THEN UPDATE SET *
-            """)
+            # Perform update using merge
+            delta_table.alias("target") \
+                .merge(
+                    df.alias("source"),
+                    "target.id = source.id"
+                ) \
+                .whenMatchedUpdateAll() \
+                .execute()
             
+            self.logger.log_info(
+                component="LOADER",
+                message="Update completed successfully"
+            )
             return True
+            
         except Exception as e:
-            self.logger.error(f"Update failed: {str(e)}")
+            self.logger.log_error(
+                component="LOADER",
+                message="Update failed",
+                details=str(e)
+            )
             return False
     
-    def _upsert(self, df: DataFrame) -> bool:
+    def _upsert_data(self, df: DataFrame) -> bool:
         """
-        Insert or update records (upsert).
+        Upsert (merge) data - update if exists, insert if not
+        Uses Delta Lake merge operation
         
         Args:
             df: DataFrame to upsert
@@ -153,35 +194,87 @@ class ETLLoader:
             True if successful
         """
         try:
-            # Create temporary view
-            df.createOrReplaceTempView("upserts")
+            target_table = self.spark.conf.get("spark.etl.target_table", "etl_target_data")
             
-            # Execute merge operation
-            self.spark.sql("""
-                MERGE INTO zetl_target_data AS target
-                USING upserts AS source
-                ON target.id = source.id
-                WHEN MATCHED THEN UPDATE SET *
-                WHEN NOT MATCHED THEN INSERT *
-            """)
+            # Check if table exists
+            try:
+                delta_table = DeltaTable.forPath(self.spark, target_table)
+                table_exists = True
+            except:
+                table_exists = False
+            
+            if table_exists:
+                # Perform merge (upsert)
+                delta_table.alias("target") \
+                    .merge(
+                        df.alias("source"),
+                        "target.id = source.id"
+                    ) \
+                    .whenMatchedUpdateAll() \
+                    .whenNotMatchedInsertAll() \
+                    .execute()
+                
+                self.logger.log_info(
+                    component="LOADER",
+                    message="Upsert completed successfully"
+                )
+            else:
+                # Create table with initial data
+                df.write \
+                    .format("delta") \
+                    .mode("overwrite") \
+                    .save(target_table)
+                
+                self.logger.log_info(
+                    component="LOADER",
+                    message=f"Created new table and inserted {df.count()} records"
+                )
             
             return True
+            
         except Exception as e:
-            self.logger.error(f"Upsert failed: {str(e)}")
-            # Fallback: try update then insert
-            try:
-                self._update_existing(df)
-            except:
-                pass
-            try:
-                self._insert_new(df)
-                return True
-            except:
-                return False
+            self.logger.log_error(
+                component="LOADER",
+                message="Upsert failed",
+                details=str(e)
+            )
+            return False
     
-    def _reconcile_data(self, loaded_df: DataFrame) -> bool:
+    def _overwrite_data(self, df: DataFrame) -> bool:
         """
-        Reconcile loaded data with target to verify integrity.
+        Overwrite entire table
+        
+        Args:
+            df: DataFrame to write
+            
+        Returns:
+            True if successful
+        """
+        try:
+            target_table = self.spark.conf.get("spark.etl.target_table", "etl_target_data")
+            
+            df.write \
+                .format("delta") \
+                .mode("overwrite") \
+                .save(target_table)
+            
+            self.logger.log_info(
+                component="LOADER",
+                message=f"Overwritten table with {df.count()} records"
+            )
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(
+                component="LOADER",
+                message="Overwrite failed",
+                details=str(e)
+            )
+            return False
+    
+    def reconcile_data(self, loaded_df: DataFrame) -> bool:
+        """
+        Reconcile loaded data against source
         
         Args:
             loaded_df: DataFrame that was loaded
@@ -190,36 +283,65 @@ class ETLLoader:
             True if reconciliation passes
         """
         try:
-            source_count = loaded_df.count()
+            target_table = self.spark.conf.get("spark.etl.target_table", "etl_target_data")
             
             # Read back from target
             target_df = self.spark.read \
-                .format("jdbc") \
-                .option("url", self._get_jdbc_url()) \
-                .option("dbtable", "zetl_target_data") \
-                .option("driver", self._get_jdbc_driver()) \
-                .load() \
+                .format("delta") \
+                .load(target_table) \
                 .filter(F.col("etl_run_id") == self.run_id)
             
+            source_count = loaded_df.count()
             target_count = target_df.count()
             
             if source_count != target_count:
-                self.logger.warning(
-                    f"Reconciliation mismatch: Source={source_count}, Target={target_count}"
+                self.logger.log_warning(
+                    component="LOADER",
+                    message=f"Reconciliation mismatch: Source={source_count}, Target={target_count}"
                 )
                 return False
             
-            self.logger.info("Data reconciliation successful")
+            # Check key integrity
+            source_ids = loaded_df.select("id").distinct()
+            target_ids = target_df.select("id").distinct()
+            
+            missing_ids = source_ids.subtract(target_ids).count()
+            if missing_ids > 0:
+                self.logger.log_warning(
+                    component="LOADER",
+                    message=f"Reconciliation failed: {missing_ids} IDs missing in target"
+                )
+                return False
+            
+            self.logger.log_info(
+                component="LOADER",
+                message="Data reconciliation successful"
+            )
             return True
             
         except Exception as e:
-            self.logger.error(f"Reconciliation error: {str(e)}")
+            self.logger.log_error(
+                component="LOADER",
+                message="Reconciliation failed",
+                details=str(e)
+            )
             return False
     
-    def _get_jdbc_url(self) -> str:
-        """Get JDBC connection URL from config."""
-        return "jdbc:postgresql://localhost:5432/etl_db"
-    
-    def _get_jdbc_driver(self) -> str:
-        """Get JDBC driver class name."""
-        return "org.postgresql.Driver"
+    def _is_reconciliation_enabled(self) -> bool:
+        """Check if reconciliation is enabled in config"""
+        try:
+            config_table = self.spark.conf.get("spark.etl.config_table", "etl_config")
+            
+            config_df = self.spark.read \
+                .format("delta") \
+                .load(config_table) \
+                .filter(F.col("config_key") == "ENABLE_RECONCILIATION")
+            
+            if config_df.count() > 0:
+                value = config_df.first()["config_value"]
+                return value.upper() in ["X", "TRUE", "1", "YES"]
+            
+            return True  # Default to enabled
+            
+        except:
+            return True
