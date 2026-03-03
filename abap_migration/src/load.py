@@ -1,274 +1,366 @@
 """
-ETL Loading Module - Batch operations for data persistence
+PySpark ETL Loading Module
+Handles batch loading operations with INSERT/UPSERT modes and comprehensive error tracking.
 """
+
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.types import StructType, StructField, StringType, DecimalType, IntegerType, TimestampType
-from typing import Dict, List, Tuple
-from datetime import datetime
+from pyspark.sql.functions import col, current_timestamp, lit
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+from enum import Enum
 import logging
 
 
+class LoadMode(Enum):
+    """Supported loading modes"""
+    INSERT = "INSERT"
+    UPDATE = "UPDATE"
+    UPSERT = "UPSERT"
+
+
+@dataclass
 class LoadResult:
-    """Container for load operation results"""
-    def __init__(self):
-        self.success_count: int = 0
-        self.error_count: int = 0
-        self.total_count: int = 0
-        self.errors: List[str] = []
-        
-    def to_dict(self) -> Dict:
-        return {
-            'success_count': self.success_count,
-            'error_count': self.error_count,
-            'total_count': self.total_count,
-            'errors': self.errors
-        }
+    """Result of load operation"""
+    success_count: int
+    error_count: int
+    total_count: int
+    errors: List[str]
+    run_id: str
+    duration_seconds: float
 
 
 class ETLLoader:
-    """Handles data loading operations with batch processing"""
+    """
+    ETL Loader for batch operations with partitioning and error handling.
+    Supports INSERT, UPDATE, and UPSERT modes.
+    """
     
-    def __init__(self, spark: SparkSession, config: Dict, run_id: str):
+    def __init__(
+        self,
+        spark: SparkSession,
+        target_table: str,
+        batch_size: int = 1000,
+        run_id: str = None,
+        target_type: str = "DATABASE"
+    ):
+        """
+        Initialize ETL Loader.
+        
+        Args:
+            spark: SparkSession instance
+            target_table: Target table name
+            batch_size: Number of records per batch
+            run_id: Unique run identifier
+            target_type: Target system type (DATABASE, etc.)
+        """
         self.spark = spark
-        self.config = config
-        self.run_id = run_id
-        self.batch_size = config.get('batch_size', 1000)
-        self.target_table = config.get('target_table', 'etl_target_data')
+        self.target_table = target_table
+        self.batch_size = batch_size
+        self.run_id = run_id or self._generate_run_id()
+        self.target_type = target_type
         self.logger = logging.getLogger(__name__)
         
-    def load_data(self, df: DataFrame, mode: str = 'INSERT') -> LoadResult:
-        """
-        Load data with batch processing and mode handling
-        
-        Args:
-            df: Transformed DataFrame to load
-            mode: Load mode - 'INSERT', 'UPDATE', 'UPSERT'
-            
-        Returns:
-            LoadResult with success/error counts
-        """
-        result = LoadResult()
-        result.total_count = df.count()
-        
-        self.logger.info(f"Starting load - Mode: {mode}, Batch size: {self.batch_size}")
-        
-        try:
-            # Process in batches using partitioning
-            batched_df = self._partition_by_batch_size(df)
-            
-            if mode.upper() == 'INSERT':
-                success = self._insert_new(batched_df)
-            elif mode.upper() == 'UPDATE':
-                success = self._update_existing(batched_df)
-            elif mode.upper() == 'UPSERT':
-                success = self._upsert_data(batched_df)
-            else:
-                success = self._insert_new(batched_df)
-                
-            if success:
-                result.success_count = result.total_count
-                result.error_count = 0
-            else:
-                result.error_count = result.total_count
-                result.errors.append("Batch load failed")
-                
-            # Reconcile if enabled
-            if self.config.get('enable_reconciliation', True):
-                self._reconcile_data(df)
-                
-            self.logger.info(
-                f"Load complete - Success: {result.success_count}, "
-                f"Errors: {result.error_count}"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"Load failed: {str(e)}")
-            result.error_count = result.total_count
-            result.errors.append(str(e))
-            
-        return result
+    def _generate_run_id(self) -> str:
+        """Generate unique run ID"""
+        import uuid
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        return f"RUN_{timestamp}_{str(uuid.uuid4())[:8]}"
     
-    def _partition_by_batch_size(self, df: DataFrame) -> DataFrame:
+    def load_data(
+        self,
+        data: DataFrame,
+        mode: str = "INSERT",
+        key_columns: List[str] = None
+    ) -> LoadResult:
         """
-        Partition DataFrame by batch size for batch processing
+        Load data with specified mode and batch processing.
         
         Args:
-            df: Input DataFrame
+            data: DataFrame to load
+            mode: Load mode (INSERT, UPDATE, UPSERT)
+            key_columns: Primary key columns for UPSERT/UPDATE
             
         Returns:
-            Repartitioned DataFrame
+            LoadResult with success/error counts and details
         """
-        total_rows = df.count()
-        num_partitions = max(1, (total_rows + self.batch_size - 1) // self.batch_size)
+        import time
+        start_time = time.time()
         
-        self.logger.info(f"Partitioning {total_rows} rows into {num_partitions} batches")
+        self.logger.info(
+            f"Starting load - Mode: {mode}, Batch size: {self.batch_size}, "
+            f"Total records: {data.count()}"
+        )
         
-        return df.repartition(num_partitions)
-    
-    def _insert_new(self, df: DataFrame) -> bool:
-        """
-        Insert new records into target table
-        
-        Args:
-            df: DataFrame to insert
-            
-        Returns:
-            Success flag
-        """
+        # Validate mode
         try:
-            self.logger.info("Executing INSERT mode")
-            
-            df.write \
-                .format(self.config.get('target_format', 'parquet')) \
-                .mode('append') \
-                .option("path", self.config.get('target_path', '/tmp/etl_target')) \
-                .saveAsTable(self.target_table)
-                
-            self.logger.info(f"Successfully inserted {df.count()} records")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Insert failed: {str(e)}")
-            return False
-    
-    def _update_existing(self, df: DataFrame) -> bool:
-        """
-        Update existing records in target table
+            load_mode = LoadMode[mode.upper()]
+        except KeyError:
+            raise ValueError(f"Invalid load mode: {mode}. Must be INSERT, UPDATE, or UPSERT")
         
-        Args:
-            df: DataFrame with updates
-            
-        Returns:
-            Success flag
-        """
-        try:
-            self.logger.info("Executing UPDATE mode")
-            
-            # Read existing data
-            existing_df = self.spark.read.table(self.target_table)
-            
-            # Join on ID and update
-            updated_df = existing_df.alias("existing") \
-                .join(df.alias("new"), on="id", how="left") \
-                .select(
-                    "existing.id",
-                    "new.name",
-                    "new.value",
-                    "new.transformed_value",
-                    "new.status",
-                    "new.category",
-                    "new.priority",
-                    "new.etl_run_id",
-                    "new.processed_at",
-                    "new.processed_by"
-                )
-            
-            # Overwrite partition
-            updated_df.write \
-                .format(self.config.get('target_format', 'parquet')) \
-                .mode('overwrite') \
-                .saveAsTable(self.target_table)
-                
-            self.logger.info(f"Successfully updated records")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Update failed: {str(e)}")
-            return False
-    
-    def _upsert_data(self, df: DataFrame) -> bool:
-        """
-        Upsert (insert or update) records in target table
+        # Add ETL metadata
+        enriched_data = self._add_metadata(data)
         
-        Args:
-            df: DataFrame to upsert
+        # Process in batches
+        batches = self._partition_into_batches(enriched_data)
+        
+        success_count = 0
+        error_count = 0
+        errors = []
+        
+        for batch_num, batch_df in enumerate(batches, 1):
+            self.logger.info(f"Processing batch {batch_num}")
             
-        Returns:
-            Success flag
-        """
-        try:
-            self.logger.info("Executing UPSERT mode")
-            
-            # Try to read existing table
             try:
-                existing_df = self.spark.read.table(self.target_table)
+                batch_success = self._commit_batch(
+                    batch_df, 
+                    load_mode, 
+                    key_columns
+                )
                 
-                # Identify new vs existing records
-                new_records = df.alias("new") \
-                    .join(existing_df.alias("existing"), on="id", how="left_anti")
+                if batch_success:
+                    batch_count = batch_df.count()
+                    success_count += batch_count
+                    self.logger.info(f"Batch {batch_num} succeeded: {batch_count} records")
+                else:
+                    batch_count = batch_df.count()
+                    error_count += batch_count
+                    error_msg = f"Batch {batch_num} failed: {batch_count} records"
+                    errors.append(error_msg)
+                    self.logger.error(error_msg)
                     
-                existing_records = df.alias("new") \
-                    .join(existing_df.alias("existing"), on="id", how="inner") \
-                    .select("new.*")
+            except Exception as e:
+                batch_count = batch_df.count()
+                error_count += batch_count
+                error_msg = f"Batch {batch_num} exception: {str(e)}"
+                errors.append(error_msg)
+                self.logger.error(error_msg, exc_info=True)
+        
+        duration = time.time() - start_time
+        total_count = success_count + error_count
+        
+        self.logger.info(
+            f"Load complete - Success: {success_count}, "
+            f"Errors: {error_count}, Duration: {duration:.2f}s"
+        )
+        
+        # Perform reconciliation if configured
+        if success_count > 0:
+            self._reconcile_data(enriched_data, success_count)
+        
+        return LoadResult(
+            success_count=success_count,
+            error_count=error_count,
+            total_count=total_count,
+            errors=errors,
+            run_id=self.run_id,
+            duration_seconds=duration
+        )
+    
+    def _add_metadata(self, data: DataFrame) -> DataFrame:
+        """Add ETL metadata columns to DataFrame"""
+        return data \
+            .withColumn("etl_run_id", lit(self.run_id)) \
+            .withColumn("etl_loaded_at", current_timestamp()) \
+            .withColumn("etl_loaded_by", lit("etl_system"))
+    
+    def _partition_into_batches(self, data: DataFrame) -> List[DataFrame]:
+        """
+        Partition DataFrame into batches based on batch_size.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            List of DataFrame batches
+        """
+        total_count = data.count()
+        num_batches = (total_count + self.batch_size - 1) // self.batch_size
+        
+        self.logger.info(
+            f"Partitioning {total_count} records into {num_batches} batches "
+            f"of size {self.batch_size}"
+        )
+        
+        # Add row number for partitioning
+        from pyspark.sql.window import Window
+        from pyspark.sql.functions import row_number, floor
+        
+        window_spec = Window.orderBy(lit(1))
+        data_with_row = data.withColumn("_row_num", row_number().over(window_spec))
+        data_with_batch = data_with_row.withColumn(
+            "_batch_id",
+            floor((col("_row_num") - 1) / self.batch_size)
+        )
+        
+        batches = []
+        for batch_id in range(num_batches):
+            batch_df = data_with_batch \
+                .filter(col("_batch_id") == batch_id) \
+                .drop("_row_num", "_batch_id")
+            batches.append(batch_df)
+        
+        return batches
+    
+    def _commit_batch(
+        self,
+        batch: DataFrame,
+        mode: LoadMode,
+        key_columns: List[str] = None
+    ) -> bool:
+        """
+        Commit a single batch to target.
+        
+        Args:
+            batch: Batch DataFrame
+            mode: Load mode
+            key_columns: Key columns for merge operations
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if mode == LoadMode.INSERT:
+                return self._insert_batch(batch)
+            elif mode == LoadMode.UPDATE:
+                return self._update_batch(batch, key_columns)
+            elif mode == LoadMode.UPSERT:
+                return self._upsert_batch(batch, key_columns)
+            else:
+                raise ValueError(f"Unsupported mode: {mode}")
                 
-                # Insert new records
-                if new_records.count() > 0:
-                    new_records.write \
-                        .format(self.config.get('target_format', 'parquet')) \
-                        .mode('append') \
-                        .saveAsTable(self.target_table)
-                    self.logger.info(f"Inserted {new_records.count()} new records")
-                
-                # Update existing records
-                if existing_records.count() > 0:
-                    self._update_existing(existing_records)
-                    self.logger.info(f"Updated {existing_records.count()} existing records")
-                    
-            except Exception:
-                # Table doesn't exist, do insert
-                self._insert_new(df)
-                
+        except Exception as e:
+            self.logger.error(f"Batch commit failed: {str(e)}", exc_info=True)
+            return False
+    
+    def _insert_batch(self, batch: DataFrame) -> bool:
+        """Insert batch using append mode"""
+        try:
+            batch.write \
+                .format("delta") \
+                .mode("append") \
+                .saveAsTable(self.target_table)
+            return True
+        except Exception as e:
+            self.logger.error(f"Insert batch failed: {str(e)}")
+            return False
+    
+    def _update_batch(self, batch: DataFrame, key_columns: List[str]) -> bool:
+        """Update existing records"""
+        if not key_columns:
+            raise ValueError("key_columns required for UPDATE mode")
+        
+        try:
+            from delta.tables import DeltaTable
+            
+            # Read target as Delta table
+            delta_table = DeltaTable.forName(self.spark, self.target_table)
+            
+            # Build merge condition
+            merge_condition = " AND ".join([
+                f"target.{col} = source.{col}" for col in key_columns
+            ])
+            
+            # Update only existing records
+            delta_table.alias("target") \
+                .merge(
+                    batch.alias("source"),
+                    merge_condition
+                ) \
+                .whenMatchedUpdateAll() \
+                .execute()
+            
             return True
             
         except Exception as e:
-            self.logger.error(f"Upsert failed: {str(e)}")
+            self.logger.error(f"Update batch failed: {str(e)}")
             return False
     
-    def _reconcile_data(self, df: DataFrame) -> bool:
+    def _upsert_batch(self, batch: DataFrame, key_columns: List[str]) -> bool:
+        """Upsert (merge) records - update if exists, insert if not"""
+        if not key_columns:
+            raise ValueError("key_columns required for UPSERT mode")
+        
+        try:
+            from delta.tables import DeltaTable
+            
+            # Create table if not exists
+            if not self.spark.catalog.tableExists(self.target_table):
+                batch.write \
+                    .format("delta") \
+                    .mode("overwrite") \
+                    .saveAsTable(self.target_table)
+                return True
+            
+            # Perform merge operation
+            delta_table = DeltaTable.forName(self.spark, self.target_table)
+            
+            merge_condition = " AND ".join([
+                f"target.{col} = source.{col}" for col in key_columns
+            ])
+            
+            delta_table.alias("target") \
+                .merge(
+                    batch.alias("source"),
+                    merge_condition
+                ) \
+                .whenMatchedUpdateAll() \
+                .whenNotMatchedInsertAll() \
+                .execute()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Upsert batch failed: {str(e)}")
+            return False
+    
+    def _reconcile_data(self, loaded_data: DataFrame, expected_count: int) -> bool:
         """
-        Reconcile loaded data with source
+        Reconcile loaded data with target table.
         
         Args:
-            df: Source DataFrame to reconcile
+            loaded_data: Data that was loaded
+            expected_count: Expected number of records
             
         Returns:
-            Reconciliation success flag
+            True if reconciliation passes
         """
         try:
-            self.logger.info("Starting data reconciliation")
+            # Read back from target
+            target_data = self.spark.table(self.target_table)
             
-            # Read target table
-            target_df = self.spark.read.table(self.target_table)
+            # Filter for this run
+            loaded_records = target_data.filter(col("etl_run_id") == self.run_id)
+            actual_count = loaded_records.count()
             
-            # Count records
-            source_count = df.count()
-            target_count = target_df.filter(f"etl_run_id = '{self.run_id}'").count()
-            
-            if source_count == target_count:
-                self.logger.info(f"Reconciliation passed: {source_count} records match")
+            if actual_count == expected_count:
+                self.logger.info(
+                    f"Reconciliation passed: {actual_count} records verified"
+                )
                 return True
             else:
                 self.logger.warning(
-                    f"Reconciliation failed: Source={source_count}, Target={target_count}"
+                    f"Reconciliation mismatch: Expected {expected_count}, "
+                    f"Found {actual_count}"
                 )
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Reconciliation error: {str(e)}")
+            self.logger.error(f"Reconciliation failed: {str(e)}")
             return False
-
-
-def get_target_schema() -> StructType:
-    """Define target table schema"""
-    return StructType([
-        StructField("id", StringType(), False),
-        StructField("name", StringType(), True),
-        StructField("value", DecimalType(15, 2), True),
-        StructField("transformed_value", DecimalType(15, 2), True),
-        StructField("status", StringType(), True),
-        StructField("category", StringType(), True),
-        StructField("priority", IntegerType(), True),
-        StructField("etl_run_id", StringType(), True),
-        StructField("processed_at", TimestampType(), True),
-        StructField("processed_by", StringType(), True)
-    ])
+    
+    def get_load_statistics(self) -> Dict:
+        """Get statistics for the current run"""
+        try:
+            target_data = self.spark.table(self.target_table)
+            run_data = target_data.filter(col("etl_run_id") == self.run_id)
+            
+            return {
+                "run_id": self.run_id,
+                "record_count": run_data.count(),
+                "target_table": self.target_table,
+                "load_timestamp": run_data.agg({"etl_loaded_at": "max"}).collect()[0][0]
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get statistics: {str(e)}")
+            return {}
