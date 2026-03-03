@@ -1,60 +1,126 @@
-# ETL Logger Configuration
+# ETL Configuration File
+# Generated for ETL data initialization and testing
 
-logger:
-  # Log level: DEBUG, INFO, WARNING, ERROR
-  log_level: INFO
-  
-  # Enable console output
-  console_output: true
-  
-  # Maximum number of logs to keep in memory
-  max_logs: 10000
-  
-  # Log export settings
-  export:
-    enabled: false
-    format: json  # text or json
-    filepath: /tmp/etl_logs.json
-    auto_export: false
-    export_interval_minutes: 60
+# Spark Configuration
+spark:
+  app_name: "ETL_Data_Generator"
+  master: "local[*]"
+  config:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
 
-# Component-specific settings
-components:
-  extractor:
-    log_level: INFO
-    verbose: true
+# Data Generation Settings
+data_generation:
+  source_data:
+    num_records: 100
+    random_seed: 42
+    categories:
+      - PREMIUM
+      - STANDARD
+      - BASIC
+      - VIP
+      - TRIAL
+    statuses:
+      - ACTIVE
+      - INACTIVE
+      - PENDING
+      - ARCHIVED
+    value_range:
+      min: 50.0
+      max: 1000.0
   
-  transformer:
-    log_level: INFO
-    verbose: true
+  staging_data:
+    num_records: 50
+    default_run_id: "RUN001"
+    statuses:
+      - READY
+      - PROCESSING
+      - COMPLETED
   
-  loader:
-    log_level: INFO
-    verbose: true
-  
-  orchestrator:
-    log_level: INFO
-    verbose: true
-  
-  data_quality:
-    log_level: INFO
-    verbose: true
+  output_paths:
+    source_data: "data/source_data.parquet"
+    staging_data: "data/staging_data.parquet"
+    config_data: "data/config_data.parquet"
+    schedule_data: "data/schedule_data.parquet"
 
-# Performance settings
+# ETL Configuration Parameters
+etl_config:
+  batch_size: 1000
+  max_retries: 3
+  log_retention_days: 90
+  enable_reconciliation: true
+  enable_data_quality: true
+  quality_threshold: 95.0
+  
+  validation:
+    min_value_threshold: 50.0
+    max_value_threshold: 10000.0
+    required_fields:
+      - id
+      - name
+      - value
+      - category
+  
+  business_rules:
+    premium_multiplier: 1.5
+    standard_multiplier: 1.0
+    basic_multiplier: 0.8
+    priority_ranges:
+      high: [1, 2]
+      medium: [3]
+      low: [4, 5]
+
+# Schedule Definitions
+schedules:
+  - schedule_id: "SCHED001"
+    schedule_name: "Daily Full Load"
+    etl_type: "FULL"
+    frequency: "DAILY"
+    start_time: "02:00:00"
+    is_active: true
+  
+  - schedule_id: "SCHED002"
+    schedule_name: "Hourly Incremental"
+    etl_type: "INCREMENTAL"
+    frequency: "HOURLY"
+    start_time: "00:00:00"
+    is_active: true
+  
+  - schedule_id: "SCHED003"
+    schedule_name: "Weekly Reconciliation"
+    etl_type: "RECONCILIATION"
+    frequency: "WEEKLY"
+    start_time: "18:00:00"
+    is_active: false
+  
+  - schedule_id: "SCHED004"
+    schedule_name: "Monthly Archive"
+    etl_type: "ARCHIVE"
+    frequency: "MONTHLY"
+    start_time: "23:00:00"
+    is_active: true
+
+# Notification Settings
+notifications:
+  alert_email: "admin@example.com"
+  enable_alerts: true
+  alert_levels:
+    - CRITICAL
+    - ERROR
+    - WARNING
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "[%(asctime)s] %(levelname)s - %(name)s - %(message)s"
+  file: "logs/etl_generator.log"
+  console: true
+
+# Performance Settings
 performance:
-  thread_safe: true
-  buffer_size: 1000
-  flush_interval_seconds: 10
-
-# Alert settings
-alerts:
-  error_threshold: 10
-  warning_threshold: 50
-  alert_on_error: false
-  alert_email: admin@example.com
-
-# Retention settings
-retention:
-  auto_cleanup: true
-  retention_days: 7
-  cleanup_interval_hours: 24
+  enable_caching: true
+  enable_broadcast_joins: true
+  broadcast_threshold: 10485760  # 10MB
+  max_concurrent_jobs: 4
