@@ -1,35 +1,58 @@
-# ETL Logger Configuration
-logger:
-  # Minimum log level (DEBUG, INFO, WARNING, ERROR)
-  min_level: INFO
-  
-  # Maximum number of log entries to keep in memory
-  max_entries: 10000
-  
-  # Enable/disable logging
-  enabled: true
-  
-  # Log export settings
-  export:
-    enabled: false
-    filepath: logs/etl_logs.txt
-    
-  # Console output settings
-  console:
-    enabled: true
-    format: "[{timestamp}] {level}: {component} - {message}"
-    
-  # Component-specific logging levels
-  component_levels:
-    EXTRACTOR: INFO
-    TRANSFORMER: INFO
-    LOADER: INFO
-    ORCHESTRATOR: INFO
-    DATA_QUALITY: INFO
-    MONITOR: WARNING
+# ETL Monitoring Configuration
 
-# Application settings
-app:
-  name: ETL Pipeline
-  version: 1.0.0
-  environment: development
+# Spark Configuration
+spark:
+  app_name: "ETL_Monitoring"
+  master: "local[*]"
+  config:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+
+# Data Paths
+data_paths:
+  run_log_path: "data/etl_run_log"
+  error_log_path: "data/etl_error_log"
+  metrics_snapshot_path: "data/metrics_snapshots"
+
+# Monitoring Configuration
+monitoring:
+  default_lookback_days: 7
+  alert_threshold_error_rate: 50.0
+  alert_threshold_jobs: 5
+  sla_duration_seconds: 3600
+  
+# Alerting Configuration
+alerting:
+  enabled: true
+  channels:
+    email:
+      enabled: true
+      recipients:
+        - "admin@example.com"
+        - "etl-team@example.com"
+    slack:
+      enabled: false
+      webhook_url: ""
+    pagerduty:
+      enabled: false
+      api_key: ""
+
+# Dashboard Configuration
+dashboard:
+  refresh_interval_seconds: 300
+  retention_days: 90
+
+# Performance Thresholds
+thresholds:
+  max_duration_seconds: 7200
+  min_throughput_records_per_sec: 100
+  max_error_rate_percent: 5.0
+
+# Metrics Collection
+metrics:
+  collection_enabled: true
+  collection_interval_seconds: 60
+  aggregation_intervals:
+    - hourly
+    - daily
+    - weekly
