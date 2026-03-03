@@ -1,99 +1,58 @@
-# ETL Configuration File
-
-# Source Configuration
-source:
-  system_name: "SAP_ERP"
-  
-  database:
-    path: "data/source/etl_source_data"
-    format: "parquet"
-    
-  staging:
-    path: "data/staging/etl_staging"
-    format: "parquet"
+# ETL Loader Configuration
 
 # Target Configuration
-target:
-  database:
-    path: "data/target/etl_target_data"
-    format: "parquet"
+target_type: "DATABASE"  # DATABASE, PARQUET, DELTA
+target_table: "etl_target_data"
+target_path: "/data/output/target"
 
-# Transformation Configuration
-transformation:
-  # Value multipliers by category
-  value_multipliers:
-    PREMIUM: 1.5
-    VIP: 2.0
-    STANDARD: 1.2
-    BASIC: 1.0
-    TRIAL: 0.8
-  
-  # Valid categories
-  valid_categories:
-    - PREMIUM
-    - VIP
-    - STANDARD
-    - BASIC
-    - TRIAL
-  
-  # Premium bonus settings
-  premium_bonus_enabled: true
-  premium_bonus: 0.2
-  
-  # Priority thresholds
-  priority_thresholds:
-    critical: 1000
-    high: 750
-    medium: 300
-    low: 100
-  
-  # Outlier detection
-  flag_outliers: true
-  max_value_threshold: 10000
+# Database Configuration
+jdbc_url: "jdbc:postgresql://localhost:5432/etl_db"
+db_user: "etl_user"
+db_password: "${DB_PASSWORD}"  # Use environment variable
+db_driver: "org.postgresql.Driver"
 
-# Loading Configuration
-loading:
-  batch_size: 1000
-  enable_reconciliation: true
-  mode: "upsert"  # insert, update, upsert
+# Batch Processing
+batch_size: 1000
+max_retries: 3
+retry_delay_seconds: 5
 
-# Metadata Configuration
-metadata:
-  run_log_path: "data/metadata/run_log"
-  error_log_path: "data/metadata/error_log"
+# Load Modes
+default_load_mode: "UPSERT"  # INSERT, UPDATE, UPSERT
+enable_reconciliation: true
 
-# Data Quality Configuration
-data_quality:
-  enable_checks: true
-  checks:
-    completeness: true
-    uniqueness: true
-    validity: true
-    consistency: true
-  
-  # Profiling settings
-  enable_profiling: true
-  enable_anomaly_detection: true
-  std_deviation_threshold: 3.0
+# Performance Settings
+num_partitions: 10
+write_parallelism: 4
+buffer_size_mb: 64
 
-# Performance Configuration
-performance:
-  shuffle_partitions: 200
-  default_parallelism: 8
-  max_records_per_partition: 100000
+# Error Handling
+error_table: "etl_error_log"
+continue_on_error: false
+max_error_threshold: 100
 
-# Monitoring Configuration
-monitoring:
-  enable_monitoring: true
-  dashboard_retention_days: 30
-  alert_email: "admin@example.com"
-  alert_on_failure: true
+# Logging
+log_level: "INFO"
+log_batch_progress: true
+log_retention_days: 90
+
+# Metadata
+add_load_timestamp: true
+add_run_id: true
+add_source_info: true
+
+# Validation
+validate_before_load: true
+validate_after_load: true
+data_quality_checks:
+  - check_duplicates
+  - check_nulls
+  - check_data_types
 
 # Spark Configuration
 spark:
-  app_name: "ETL_Transformation_Engine"
+  app_name: "ETL_Loader"
   master: "local[*]"
-  log_level: "INFO"
   config:
+    spark.sql.shuffle.partitions: "200"
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
