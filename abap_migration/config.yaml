@@ -1,135 +1,122 @@
-# PySpark ETL Logger Configuration
+# PySpark Data Quality Framework Configuration
 
-# Application Settings
-application:
-  name: "PySpark ETL Logger"
-  version: "1.0.0"
-  environment: "development"
-
-# Logging Configuration
-logging:
-  # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  default_level: "INFO"
-  
-  # Console output settings
-  console:
-    enabled: true
-    format: "[%(asctime)s] %(levelname)s: %(message)s"
-    date_format: "%Y-%m-%d %H:%M:%S"
-  
-  # In-memory storage settings
-  memory:
-    enabled: true
-    max_entries: 10000  # Maximum number of log entries to keep in memory
-    retention_hours: 24  # Auto-clear logs older than this
-  
-  # Log components
-  components:
-    - "EXTRACTOR"
-    - "TRANSFORMER"
-    - "LOADER"
-    - "VALIDATOR"
-    - "ORCHESTRATOR"
-    - "DATA_QUALITY"
-    - "MONITOR"
-
-# ETL Process Configuration
-etl:
-  # Extraction settings
-  extraction:
-    source_type: "database"
-    max_records: 0  # 0 means no limit
-    batch_size: 1000
-    timeout_seconds: 300
-  
-  # Transformation settings
-  transformation:
-    enable_validation: true
-    enable_enrichment: true
-    apply_business_rules: true
-  
-  # Loading settings
-  loading:
-    target_type: "database"
-    batch_size: 1000
-    mode: "upsert"  # insert, update, upsert
-    enable_reconciliation: true
-    max_retries: 3
-
-# Spark Configuration
 spark:
-  app_name: "ETL_Logger_Application"
+  app_name: "ETL_Data_Quality_Framework"
   master: "local[*]"
   config:
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
-    spark.sql.session.timeZone: "UTC"
-    spark.driver.memory: "4g"
-    spark.executor.memory: "4g"
     spark.sql.shuffle.partitions: "200"
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+    spark.sql.sources.partitionOverwriteMode: "dynamic"
 
-# Performance Monitoring
-monitoring:
-  enabled: true
-  metrics:
-    - "execution_time"
-    - "record_count"
-    - "error_rate"
-    - "throughput"
+# Data Quality Configuration
+quality:
+  # Required fields that must not be null or empty
+  required_fields:
+    - id
+    - name
+    - value
   
-  alerts:
-    error_rate_threshold: 0.05  # 5%
-    execution_time_threshold_minutes: 60
+  # Fields that must be unique
+  unique_keys:
+    - id
+  
+  # Valid value ranges for numeric fields
+  value_ranges:
+    value:
+      min: 0
+      max: 999999
+    transformed_value:
+      min: 0
+      max: 999999
+    priority:
+      min: 1
+      max: 5
+  
+  # Business rules configuration
+  business_rules:
+    # Premium category minimum value threshold
+    premium_min_value: 500
     
-  dashboard:
-    refresh_interval_seconds: 60
-    retention_days: 30
-
-# Data Quality Checks
-data_quality:
-  enabled: true
-  checks:
-    - name: "completeness"
-      enabled: true
-      threshold: 0.95
-    - name: "uniqueness"
-      enabled: true
-      threshold: 1.0
-    - name: "validity"
-      enabled: true
-      threshold: 0.98
-    - name: "consistency"
-      enabled: true
-      threshold: 0.99
+    # Allowed status values
+    allowed_statuses:
+      - ACTIVE
+      - TRANSFORMED
+      - HIGH_VALUE
+      - MEDIUM_VALUE
+      - LOW_VALUE
+      - NORMAL
+      - INVALID
+    
+    # Invalid name pattern (regex)
+    invalid_name_pattern: '[^A-Za-z0-9\s\-_.]'
+    
+    # Category-specific rules
+    category_rules:
+      PREMIUM:
+        min_value: 500
+        priority_range: [1, 3]
+      VIP:
+        min_value: 750
+        priority_range: [1, 2]
+      STANDARD:
+        min_value: 100
+        priority_range: [2, 4]
+      BASIC:
+        min_value: 50
+        priority_range: [3, 5]
   
+  # Anomaly detection thresholds
   anomaly_detection:
-    enabled: true
-    method: "statistical"  # statistical, ml
-    sensitivity: "medium"  # low, medium, high
+    outlier_iqr_multiplier: 1.5
+    skew_threshold: 0.5  # 50% of data in one category
+    enable_outlier_detection: true
+    enable_distribution_analysis: true
 
-# Error Handling
-error_handling:
+# ETL Configuration
+etl:
+  source_type: "DATABASE"
+  target_type: "DATABASE"
+  batch_size: 1000
   max_retries: 3
-  retry_delay_seconds: 5
-  retry_backoff_multiplier: 2
-  fail_on_error: false
-  log_stack_trace: true
+  enable_reconciliation: true
   
-  notification:
-    enabled: true
-    channels:
-      - "email"
-      - "log"
-    email:
-      recipients:
-        - "admin@example.com"
-      smtp_server: "smtp.example.com"
-      smtp_port: 587
+# Paths
+paths:
+  input_data: "data/input"
+  output_data: "data/output"
+  quality_reports: "data/quality_reports"
+  failed_records: "data/failed_records"
+  logs: "logs"
 
-# Test Mode Settings
-test_mode:
-  enabled: false
-  sample_size: 100
-  commit_enabled: false
-  verbose_logging: true
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/data_quality.log"
+  console_output: true
+
+# Data Schema
+schema:
+  transformed_data:
+    id: string
+    name: string
+    value: decimal(15,2)
+    transformed_value: decimal(15,2)
+    status: string
+    category: string
+    priority: integer
+    etl_run_id: string
+    processed_at: timestamp
+    processed_by: string
+
+# Report Configuration
+reporting:
+  generate_html_report: true
+  generate_json_report: true
+  save_failed_records: true
+  email_notifications: false
+  alert_on_failure: true
+  failure_threshold: 0.1  # Alert if >10% checks fail
