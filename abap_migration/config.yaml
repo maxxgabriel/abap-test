@@ -1,174 +1,96 @@
-# PySpark ETL Framework Configuration
-
-# Application Settings
+# Shared Framework Configuration
 app:
-  name: "ETL Framework"
+  name: "ETL Shared Framework"
   version: "1.0.0"
   environment: "production"
 
-# Spark Configuration
+logging:
+  level: "INFO"
+  format: "json"
+  console_output: true
+  file_output: true
+  log_dir: "/var/log/etl"
+  max_file_size_mb: 100
+  backup_count: 10
+  components:
+    - "EXTRACTOR"
+    - "TRANSFORMER"
+    - "LOADER"
+    - "ORCHESTRATOR"
+    - "DATA_QUALITY"
+    - "MONITOR"
+
+database:
+  source:
+    type: "postgresql"
+    host: "${SOURCE_DB_HOST}"
+    port: 5432
+    database: "${SOURCE_DB_NAME}"
+    user: "${SOURCE_DB_USER}"
+    password: "${SOURCE_DB_PASSWORD}"
+    schema: "etl_source"
+    connection_pool:
+      max_connections: 20
+      min_connections: 5
+      connection_timeout: 30
+      idle_timeout: 600
+  
+  target:
+    type: "postgresql"
+    host: "${TARGET_DB_HOST}"
+    port: 5432
+    database: "${TARGET_DB_NAME}"
+    user: "${TARGET_DB_USER}"
+    password: "${TARGET_DB_PASSWORD}"
+    schema: "etl_target"
+    connection_pool:
+      max_connections: 20
+      min_connections: 5
+      connection_timeout: 30
+      idle_timeout: 600
+
 spark:
   app_name: "ETL_Shared_Framework"
   master: "local[*]"
   config:
-    spark.sql.shuffle.partitions: "200"
     spark.sql.adaptive.enabled: "true"
     spark.sql.adaptive.coalescePartitions.enabled: "true"
-    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
-    spark.kryoserializer.buffer.max: "512m"
-    spark.sql.sources.partitionOverwriteMode: "dynamic"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.executor.memory: "4g"
+    spark.driver.memory: "2g"
+    spark.executor.cores: "4"
+    spark.sql.warehouse.dir: "/opt/spark/warehouse"
 
-# Logging Configuration
-logging:
-  level: "INFO"
-  format: "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
-  date_format: "%Y-%m-%d %H:%M:%S"
-  file:
-    enabled: true
-    path: "logs"
-    max_bytes: 10485760  # 10MB
-    backup_count: 5
-  console:
-    enabled: true
-
-# Database Configuration
-database:
-  default:
-    driver: "org.postgresql.Driver"
-    url: "jdbc:postgresql://localhost:5432/etl_db"
-    user: "etl_user"
-    password: "${DB_PASSWORD}"  # Environment variable
-    properties:
-      numPartitions: "4"
-      batchsize: "10000"
-      isolationLevel: "READ_COMMITTED"
-  
-  source:
-    driver: "org.postgresql.Driver"
-    url: "jdbc:postgresql://source-db:5432/source_db"
-    user: "source_user"
-    password: "${SOURCE_DB_PASSWORD}"
-    
-  target:
-    driver: "org.postgresql.Driver"
-    url: "jdbc:postgresql://target-db:5432/target_db"
-    user: "target_user"
-    password: "${TARGET_DB_PASSWORD}"
-
-# ETL Configuration
 etl:
   batch_size: 1000
-  max_records: 0  # 0 means no limit
   max_retries: 3
   retry_delay_seconds: 5
-  enable_validation: true
   enable_reconciliation: true
   enable_data_quality: true
+  max_records_per_run: 0  # 0 = unlimited
   
-  # Source configuration
-  source:
-    type: "database"  # database, file, api
-    format: "jdbc"
-    incremental:
-      enabled: true
-      column: "changed_at"
-      
-  # Target configuration
-  target:
-    type: "database"
-    format: "jdbc"
-    mode: "upsert"  # insert, update, upsert, overwrite
-    partition_by: []
-
-# Data Quality Configuration
-data_quality:
-  enabled: true
-  rules:
-    completeness:
-      required_fields: ["id", "name", "value"]
-    uniqueness:
-      key_fields: ["id"]
-    validity:
-      value_range:
-        min: 0
-        max: 999999
-      priority_range:
-        min: 1
-        max: 5
-    consistency:
-      enabled: true
-
-# Monitoring Configuration
 monitoring:
-  enabled: true
-  metrics:
-    enabled: true
-    interval_seconds: 60
-  alerts:
-    enabled: true
-    email:
-      enabled: false
-      recipients: ["admin@example.com"]
-      smtp_host: "smtp.example.com"
-      smtp_port: 587
-    webhook:
-      enabled: false
-      url: ""
-  
-  health_check:
-    interval_seconds: 300
-    thresholds:
-      max_running_jobs: 5
-      error_rate_warning: 20.0
-      error_rate_critical: 50.0
+  enable_metrics: true
+  metrics_port: 9090
+  dashboard_refresh_seconds: 30
+  health_check_interval_seconds: 60
+  alert_email: "admin@example.com"
+  alert_thresholds:
+    error_rate_percent: 20
+    critical_error_rate_percent: 50
+    max_concurrent_jobs: 5
 
-# Schema Definitions
-schemas:
-  source_data:
-    id: "string"
-    name: "string"
-    value: "decimal(15,2)"
-    status: "string"
-    category: "string"
-    source_system: "string"
-    created_at: "timestamp"
-    created_by: "string"
-    changed_at: "timestamp"
-    changed_by: "string"
-    
-  transformed_data:
-    id: "string"
-    name: "string"
-    value: "decimal(15,2)"
-    transformed_value: "decimal(15,2)"
-    status: "string"
-    category: "string"
-    priority: "integer"
-    etl_run_id: "string"
-    processed_at: "timestamp"
-    processed_by: "string"
+data_quality:
+  enable_profiling: true
+  enable_anomaly_detection: true
+  completeness_threshold: 95
+  uniqueness_threshold: 100
+  validity_threshold: 98
+  consistency_threshold: 95
 
-# Business Rules Configuration
-business_rules:
-  category_multipliers:
-    PREMIUM: 1.5
-    STANDARD: 1.0
-    BASIC: 0.8
-    VIP: 2.0
-    TRIAL: 0.5
-    
-  priority_thresholds:
-    high: 1000
-    medium: 300
-    low: 0
-    
-  status_mapping:
-    high_value: 750
-    medium_value: 300
-
-# File Paths
-paths:
-  data: "data"
-  logs: "logs"
-  checkpoints: "checkpoints"
-  temp: "temp"
+performance:
+  enable_caching: true
+  cache_timeout_minutes: 60
+  enable_compression: true
+  compression_codec: "snappy"
