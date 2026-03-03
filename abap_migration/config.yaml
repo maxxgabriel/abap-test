@@ -1,145 +1,44 @@
 # ETL Data Initialization Configuration
 
-# Application settings
-app:
-  name: "ETL Data Initializer"
-  version: "1.0.0"
-  environment: "development"
-
-# Spark configuration
-spark:
-  app_name: "ETL_Data_Initialization"
-  master: "local[*]"
-  log_level: "WARN"
-  sql:
-    shuffle_partitions: 200
-    adaptive_enabled: true
-
-# Data generation settings
-data_generation:
+init_data:
+  sample_rows: 100
   categories:
-    - "PREMIUM"
-    - "STANDARD"
-    - "BASIC"
-    - "VIP"
-    - "TRIAL"
-  
-  statuses:
-    - "ACTIVE"
-    - "INACTIVE"
-    - "PENDING"
-    - "ARCHIVED"
-  
+    - PREMIUM
+    - STANDARD
+    - BASIC
+    - VIP
+    - TRIAL
   value_range:
     min: 50
     max: 1000
-  
-  default_rows:
-    source: 100
-    staging: 50
 
-# File paths
-paths:
-  source_data: "data/source/etl_source_data"
-  config_data: "data/config/etl_config"
-  schedule_data: "data/schedule/etl_schedule"
-  staging_data: "data/staging/etl_staging"
-  target_data: "data/target/etl_target_data"
-  logs: "logs"
+spark:
+  app_name: ETL_Data_Initializer
+  master: local[*]
+  configs:
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.default.parallelism: 8
+    spark.driver.memory: 2g
+    spark.executor.memory: 4g
 
-# Business rules
-business_rules:
-  multipliers:
-    PREMIUM: 1.5
-    STANDARD: 1.2
-    BASIC: 1.0
-    VIP: 2.0
-    TRIAL: 0.8
-  
-  thresholds:
-    high_value: 750
-    medium_value: 300
-    low_value: 0
-  
-  priority_mapping:
-    high: 1
-    medium: 3
-    low: 5
-
-# ETL configuration
-etl:
-  batch_size: 1000
-  max_retries: 3
-  retry_delay_seconds: 5
-  enable_reconciliation: true
-  
-  source_types:
-    - "DATABASE"
-    - "STAGING"
-    - "INCREMENTAL"
-  
-  target_types:
-    - "DATABASE"
-    - "FILE"
-    - "WAREHOUSE"
-  
-  load_modes:
-    - "INSERT"
-    - "UPDATE"
-    - "UPSERT"
-
-# Data quality settings
-data_quality:
-  enable_checks: true
-  check_types:
-    - "completeness"
-    - "uniqueness"
-    - "validity"
-    - "consistency"
-  
-  thresholds:
-    completeness: 0.95
-    uniqueness: 1.0
-    validity: 0.98
-  
-  alert_on_failure: true
-
-# Monitoring and alerting
-monitoring:
-  enable_dashboard: true
-  retention_days: 90
-  alert_email: "admin@example.com"
-  health_check_interval_minutes: 15
-  
-  metrics:
-    - "records_processed"
-    - "duration_seconds"
-    - "error_rate"
-    - "throughput"
-
-# Logging configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/etl_init_data.log"
-  max_file_size_mb: 10
-  backup_count: 5
-
-# Schedule frequencies
-schedule:
-  frequencies:
-    - "HOURLY"
-    - "DAILY"
-    - "WEEKLY"
-    - "MONTHLY"
-  
-  default_start_time: "02:00:00"
-  timezone: "UTC"
-
-# Database connection (if needed)
 database:
-  jdbc_url: "jdbc:postgresql://localhost:5432/etl_db"
-  driver: "org.postgresql.Driver"
-  user: "etl_user"
-  password: "${DB_PASSWORD}"
-  pool_size: 10
+  format: parquet
+  source_data_path: data/source_data
+  config_data_path: data/config_data
+  schedule_data_path: data/schedule_data
+  category_metadata_path: data/category_metadata
+  checkpoint_location: /tmp/etl_checkpoints
+  write_mode: overwrite
+
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+validation:
+  max_null_percentage: 5.0
+  min_unique_ids: 90.0
+  value_range:
+    min: 0
+    max: 10000
