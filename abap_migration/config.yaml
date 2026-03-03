@@ -1,51 +1,135 @@
-# ETL Logger Configuration
+# PySpark ETL Logger Configuration
+
+# Application Settings
+application:
+  name: "PySpark ETL Logger"
+  version: "1.0.0"
+  environment: "development"
+
+# Logging Configuration
 logging:
-  level: INFO
-  format: "[%(asctime)s] %(levelname)s: %(component)s - %(message)s"
-  date_format: "%Y-%m-%d %H:%M:%S"
+  # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  default_level: "INFO"
+  
+  # Console output settings
+  console:
+    enabled: true
+    format: "[%(asctime)s] %(levelname)s: %(message)s"
+    date_format: "%Y-%m-%d %H:%M:%S"
   
   # In-memory storage settings
-  storage:
-    max_entries: 10000  # Maximum log entries to retain in memory
-    auto_clear: false   # Automatically clear logs after export
-    
-  # Log rotation (for future file-based implementation)
-  rotation:
-    enabled: false
-    max_bytes: 10485760  # 10 MB
-    backup_count: 5
-
-# Component names for standardization
-components:
-  extractor: EXTRACTOR
-  transformer: TRANSFORMER
-  loader: LOADER
-  orchestrator: ORCHESTRATOR
-  data_quality: DATA_QUALITY
-  monitor: MONITOR
-
-# Log levels mapping
-log_levels:
-  debug: DEBUG
-  info: INFO
-  warning: WARNING
-  error: ERROR
-  critical: CRITICAL
+  memory:
+    enabled: true
+    max_entries: 10000  # Maximum number of log entries to keep in memory
+    retention_hours: 24  # Auto-clear logs older than this
+  
+  # Log components
+  components:
+    - "EXTRACTOR"
+    - "TRANSFORMER"
+    - "LOADER"
+    - "VALIDATOR"
+    - "ORCHESTRATOR"
+    - "DATA_QUALITY"
+    - "MONITOR"
 
 # ETL Process Configuration
 etl:
-  default_batch_size: 1000
-  max_retries: 3
-  timeout_seconds: 3600
+  # Extraction settings
+  extraction:
+    source_type: "database"
+    max_records: 0  # 0 means no limit
+    batch_size: 1000
+    timeout_seconds: 300
   
-  # Performance monitoring
-  monitoring:
-    enabled: true
-    log_performance_metrics: true
-    alert_on_error_threshold: 10
+  # Transformation settings
+  transformation:
+    enable_validation: true
+    enable_enrichment: true
+    apply_business_rules: true
+  
+  # Loading settings
+  loading:
+    target_type: "database"
+    batch_size: 1000
+    mode: "upsert"  # insert, update, upsert
+    enable_reconciliation: true
+    max_retries: 3
 
-# Testing Configuration
-testing:
-  mock_data_rows: 100
-  test_run_prefix: "TEST"
-  enable_debug_logs: true
+# Spark Configuration
+spark:
+  app_name: "ETL_Logger_Application"
+  master: "local[*]"
+  config:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+    spark.sql.session.timeZone: "UTC"
+    spark.driver.memory: "4g"
+    spark.executor.memory: "4g"
+    spark.sql.shuffle.partitions: "200"
+
+# Performance Monitoring
+monitoring:
+  enabled: true
+  metrics:
+    - "execution_time"
+    - "record_count"
+    - "error_rate"
+    - "throughput"
+  
+  alerts:
+    error_rate_threshold: 0.05  # 5%
+    execution_time_threshold_minutes: 60
+    
+  dashboard:
+    refresh_interval_seconds: 60
+    retention_days: 30
+
+# Data Quality Checks
+data_quality:
+  enabled: true
+  checks:
+    - name: "completeness"
+      enabled: true
+      threshold: 0.95
+    - name: "uniqueness"
+      enabled: true
+      threshold: 1.0
+    - name: "validity"
+      enabled: true
+      threshold: 0.98
+    - name: "consistency"
+      enabled: true
+      threshold: 0.99
+  
+  anomaly_detection:
+    enabled: true
+    method: "statistical"  # statistical, ml
+    sensitivity: "medium"  # low, medium, high
+
+# Error Handling
+error_handling:
+  max_retries: 3
+  retry_delay_seconds: 5
+  retry_backoff_multiplier: 2
+  fail_on_error: false
+  log_stack_trace: true
+  
+  notification:
+    enabled: true
+    channels:
+      - "email"
+      - "log"
+    email:
+      recipients:
+        - "admin@example.com"
+      smtp_server: "smtp.example.com"
+      smtp_port: 587
+
+# Test Mode Settings
+test_mode:
+  enabled: false
+  sample_size: 100
+  commit_enabled: false
+  verbose_logging: true
